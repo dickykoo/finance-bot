@@ -2,12 +2,13 @@ import sqlite3
 import re
 import csv
 import os
+import threading
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ========== 配置 ==========
-TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
+TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")  # 從環境變數讀取 Token
 DEFAULT_FEE_RATE = 3.5
 DEFAULT_EXCHANGE_RATE = 7.9
 
@@ -151,17 +152,86 @@ def cancel_transaction(transaction_id):
     return affected > 0
 
 def export_to_csv():
-    transactions = get_all_transactions()
+    """匯出每日明細報表"""
+    # 獲取所有交易記錄
+    conn = sqlite3.connect('finance.db')
+    c = conn.cursor()
+    c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions ORDER BY date ASC")
+    transactions = c.fetchall()
+    conn.close()
+    
     if not transactions:
         return None
-    filename = f"finance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    # 獲取費率匯率
+    fee_rate, exchange_rate = get_current_rates()
+    
+    # 按日期分組
+    daily_data = {}
+    for type, hkd, usdt, customer, operator, date in transactions:
+        date_str = date.split()[0]
+        
+        if date_str not in daily_data:
+            daily_data[date_str] = {'income': 0, 'expense': 0}
+        
+        if type == 'income':
+            daily_data[date_str]['income'] += hkd
+        else:
+            daily_data[date_str]['expense'] += hkd
+    
+    # 按日期排序
+    sorted_dates = sorted(daily_data.keys())
+    
+    filename = f"daily_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     filepath = os.path.join(os.path.dirname(__file__), filename)
+    
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
-        writer.writerow(['ID', '類型', '港幣金額', 'USDT金額', '客戶', '操作人', '日期時間'])
-        for row in transactions:
-            type_text = "入款" if row[1] == 'income' else "下發"
-            writer.writerow([row[0], type_text, f"{row[2]:,.2f}", f"{row[3]:,.2f}", row[4], row[5], row[6]])
+        
+        writer.writerow(['📊 每日財務明細報表'])
+        writer.writerow(['生成時間', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        writer.writerow(['費率', f"{fee_rate}%"])
+        writer.writerow(['匯率', str(exchange_rate)])
+        writer.writerow([])
+        
+        writer.writerow([
+            '日期', 
+            '入款金額 (HKD)', 
+            f'費率扣除 ({fee_rate}%)', 
+            '實際入款 (HKD)', 
+            '下發金額 (HKD)', 
+            '當日結餘 (HKD)', 
+            '累積結餘 (HKD)'
+        ])
+        
+        cumulative_balance = 0
+        
+        for date_str in sorted_dates:
+            income = daily_data[date_str]['income']
+            expense = daily_data[date_str]['expense']
+            fee_deduction = income * (fee_rate / 100)
+            actual_income = income - fee_deduction
+            daily_balance = actual_income - expense
+            
+            cumulative_balance += daily_balance
+            
+            writer.writerow([
+                date_str,
+                f"{income:,.2f}",
+                f"{fee_deduction:,.2f}",
+                f"{actual_income:,.2f}",
+                f"{expense:,.2f}",
+                f"{daily_balance:,.2f}",
+                f"{cumulative_balance:,.2f}"
+            ])
+        
+        writer.writerow([])
+        writer.writerow(['=== 總結 ==='])
+        writer.writerow(['總入款 (HKD)', f"{sum(d['income'] for d in daily_data.values()):,.2f}"])
+        writer.writerow(['總下發 (HKD)', f"{sum(d['expense'] for d in daily_data.values()):,.2f}"])
+        writer.writerow(['最終累積結餘 (HKD)', f"{cumulative_balance:,.2f}"])
+        writer.writerow(['最終累積結餘 (USDT)', f"{cumulative_balance / exchange_rate:.2f}"])
+    
     return filepath
 
 # ========== Sample 數據 ==========
@@ -199,7 +269,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *查看報表：*
 `/list` - 今日明細 + 累積結餘
 `/stats` - 今日統計
-`/export` - 匯出 Excel 報表
+`/export` - 匯出 Excel 報表（每日明細）
 `/undo` - 撤銷最後一筆
 
 *管理設定：*
@@ -335,7 +405,7 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         with open(filepath, 'rb') as f:
-            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 財務報表\n生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 每日財務明細報表\n生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         os.remove(filepath)
     except Exception as e:
         await update.message.reply_text(f"❌ 匯出失敗：{e}")
