@@ -72,13 +72,14 @@ def get_all_groups():
     conn.close()
     return groups
 
-# ========== 資料庫初始化 ==========
-def init_db():
+# ========== 為每個群組創建獨立表 ==========
+def init_group_table(chat_id):
+    """為群組創建獨立的交易記錄表"""
     conn = get_db_connection()
     c = conn.cursor()
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
+    table_name = f"transactions_{chat_id}"
+    c.execute(f'''
+        CREATE TABLE IF NOT EXISTS {table_name} (
             id SERIAL PRIMARY KEY,
             type TEXT,
             amount_hkd REAL,
@@ -89,8 +90,10 @@ def init_db():
         )
     ''')
     
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
+    # 同時創建設定表（每個群組獨立費率匯率）
+    settings_table = f"settings_{chat_id}"
+    c.execute(f'''
+        CREATE TABLE IF NOT EXISTS {settings_table} (
             id SERIAL PRIMARY KEY,
             fee_rate REAL,
             exchange_rate REAL,
@@ -98,69 +101,80 @@ def init_db():
         )
     ''')
     
-    c.execute("SELECT COUNT(*) FROM settings")
+    # 檢查是否有設定，如果沒有就插入默認值
+    c.execute(f"SELECT COUNT(*) FROM {settings_table}")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
+        c.execute(f"INSERT INTO {settings_table} (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
                   (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE, get_hk_time_str()))
     
     conn.commit()
     conn.close()
-    
-    # 初始化群組表
-    init_groups_table()
 
-def get_current_rates():
+# ========== 獲取群組的費率匯率 ==========
+def get_group_rates(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT fee_rate, exchange_rate FROM settings ORDER BY id DESC LIMIT 1")
-    result = c.fetchone()
+    table_name = f"settings_{chat_id}"
+    try:
+        c.execute(f"SELECT fee_rate, exchange_rate FROM {table_name} ORDER BY id DESC LIMIT 1")
+        result = c.fetchone()
+        conn.close()
+        if result:
+            return result[0], result[1]
+    except:
+        pass
     conn.close()
-    if result:
-        return result[0], result[1]
     return DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE
 
-def update_rates(fee_rate=None, exchange_rate=None):
+def update_group_rates(chat_id, fee_rate=None, exchange_rate=None):
     conn = get_db_connection()
     c = conn.cursor()
-    current_fee, current_exchange = get_current_rates()
+    current_fee, current_exchange = get_group_rates(chat_id)
     new_fee = fee_rate if fee_rate is not None else current_fee
     new_exchange = exchange_rate if exchange_rate is not None else current_exchange
-    c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
+    table_name = f"settings_{chat_id}"
+    c.execute(f"INSERT INTO {table_name} (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
               (new_fee, new_exchange, get_hk_time_str()))
     conn.commit()
     conn.close()
+    return new_fee, new_exchange
 
-def calculate_income(amount_hkd, fee_rate, exchange_rate):
-    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
-
-def calculate_expense(amount_hkd, exchange_rate):
-    return amount_hkd / exchange_rate
-
-def add_transaction(type, amount_hkd, amount_usdt, customer, operator):
+# ========== 交易操作（群組獨立）==========
+def add_transaction_group(chat_id, type, amount_hkd, amount_usdt, customer, operator):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO transactions (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s)",
+    table_name = f"transactions_{chat_id}"
+    c.execute(f"INSERT INTO {table_name} (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s)",
               (type, amount_hkd, amount_usdt, customer, operator, get_hk_time_str()))
     conn.commit()
     conn.close()
 
-def get_today_transactions():
+def get_today_transactions_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
-    results = c.fetchall()
+    table_name = f"transactions_{chat_id}"
+    try:
+        c.execute(f"SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
+        results = c.fetchall()
+    except:
+        results = []
     conn.close()
     return results
 
-def get_today_stats():
+def get_today_stats_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
-    income_hkd, income_usdt = c.fetchone() or (0, 0)
-    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
-    expense_hkd, expense_usdt = c.fetchone() or (0, 0)
+    table_name = f"transactions_{chat_id}"
+    try:
+        c.execute(f"SELECT SUM(amount_hkd), SUM(amount_usdt) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
+        income_hkd, income_usdt = c.fetchone() or (0, 0)
+        c.execute(f"SELECT SUM(amount_hkd), SUM(amount_usdt) FROM {table_name} WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
+        expense_hkd, expense_usdt = c.fetchone() or (0, 0)
+    except:
+        income_hkd, income_usdt = 0, 0
+        expense_hkd, expense_usdt = 0, 0
     conn.close()
     income_hkd = income_hkd or 0
     income_usdt = income_usdt or 0
@@ -173,47 +187,57 @@ def get_today_stats():
         'expense_usdt': expense_usdt
     }
 
-def get_all_stats():
+def get_all_stats_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT SUM(amount_hkd) FROM transactions WHERE type = 'income'")
-    total_income_all = c.fetchone()[0] or 0
-    c.execute("SELECT SUM(amount_hkd) FROM transactions WHERE type = 'expense'")
-    total_expense_all = c.fetchone()[0] or 0
+    table_name = f"transactions_{chat_id}"
+    try:
+        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'income'")
+        total_income_all = c.fetchone()[0] or 0
+        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'expense'")
+        total_expense_all = c.fetchone()[0] or 0
+    except:
+        total_income_all, total_expense_all = 0, 0
     conn.close()
     return total_income_all, total_expense_all
 
-def get_all_transactions():
+def get_last_transaction_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, type, amount_hkd, amount_usdt, customer, operator, date FROM transactions ORDER BY date DESC")
-    results = c.fetchall()
-    conn.close()
-    return results
-
-def get_last_transaction():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, type, amount_hkd, customer FROM transactions ORDER BY date DESC LIMIT 1")
-    result = c.fetchone()
+    table_name = f"transactions_{chat_id}"
+    try:
+        c.execute(f"SELECT id, type, amount_hkd, customer FROM {table_name} ORDER BY date DESC LIMIT 1")
+        result = c.fetchone()
+    except:
+        result = None
     conn.close()
     return result
 
-def cancel_transaction(transaction_id):
+def cancel_transaction_group(chat_id, transaction_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM transactions WHERE id = %s", (transaction_id,))
+    table_name = f"transactions_{chat_id}"
+    c.execute(f"DELETE FROM {table_name} WHERE id = %s", (transaction_id,))
     conn.commit()
     affected = c.rowcount
     conn.close()
     return affected > 0
 
-def export_to_csv():
-    transactions = get_all_transactions()
+def export_to_csv_group(chat_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    table_name = f"transactions_{chat_id}"
+    try:
+        c.execute(f"SELECT id, type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} ORDER BY date DESC")
+        transactions = c.fetchall()
+    except:
+        transactions = []
+    conn.close()
+    
     if not transactions:
         return None
     
-    fee_rate, exchange_rate = get_current_rates()
+    fee_rate, exchange_rate = get_group_rates(chat_id)
     daily_data = {}
     for id, type, hkd, usdt, customer, operator, date in transactions:
         date_str = date.split()[0]
@@ -225,7 +249,7 @@ def export_to_csv():
             daily_data[date_str]['expense'] += hkd
     
     sorted_dates = sorted(daily_data.keys())
-    filename = f"daily_report_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"daily_report_{chat_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
     filepath = os.path.join(os.path.dirname(__file__), filename)
     
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
@@ -258,15 +282,17 @@ def export_to_csv():
 
 # ========== Telegram 命令 ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    init_db()
+    chat = update.effective_chat
+    chat_id = chat.id
     
     # 記錄群組
-    chat = update.effective_chat
     if chat.type in ['group', 'supergroup']:
-        add_group(chat.id, chat.title)
-        await update.message.reply_text(f"✅ 本群組已加入定時報表列表，每晚 11:59 會自動發送今日明細")
+        add_group(chat_id, chat.title)
+        # 為這個群組創建獨立的數據表
+        init_group_table(chat_id)
+        await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！\n\n每晚 11:59 會自動發送今日明細到本群組")
     
-    fee_rate, exchange_rate = get_current_rates()
+    fee_rate, exchange_rate = get_group_rates(chat_id)
     text = f"""💼 財務公司記帳機器人
 
 當前設定:
@@ -289,10 +315,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /rate 7.9 - 設置匯率
 
 定時報表:
-每晚 11:59 自動發送今日明細到所有群組"""
+每晚 11:59 自動發送今日明細到本群組"""
     await update.message.reply_text(text)
 
 async def set_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     if not await is_admin(update):
         await update.message.reply_text("❌ 只有群組管理員才能使用此功能")
         return
@@ -301,12 +328,13 @@ async def set_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         new_fee = float(context.args[0])
-        update_rates(fee_rate=new_fee)
+        update_group_rates(chat_id, fee_rate=new_fee)
         await update.message.reply_text(f"✅ 費率已更新為: {new_fee}%")
     except:
         await update.message.reply_text("❌ 請輸入有效的數字")
 
 async def set_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     if not await is_admin(update):
         await update.message.reply_text("❌ 只有群組管理員才能使用此功能")
         return
@@ -315,7 +343,7 @@ async def set_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         new_rate = float(context.args[0])
-        update_rates(exchange_rate=new_rate)
+        update_group_rates(chat_id, exchange_rate=new_rate)
         await update.message.reply_text(f"✅ 匯率已更新為: {new_rate}")
     except:
         await update.message.reply_text("❌ 請輸入有效的數字")
@@ -341,8 +369,9 @@ async def is_admin(update: Update) -> bool:
 
 async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """只顯示今日明細（入款/下發逐筆記錄）"""
-    transactions = get_today_transactions()
-    fee_rate, exchange_rate = get_current_rates()
+    chat_id = update.effective_chat.id
+    transactions = get_today_transactions_group(chat_id)
+    fee_rate, exchange_rate = get_group_rates(chat_id)
     
     if not transactions:
         await update.message.reply_text("📭 今日暫無交易記錄")
@@ -372,9 +401,10 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """只顯示統計（記帳後用）"""
-    stats = get_today_stats()
-    fee_rate, exchange_rate = get_current_rates()
-    total_income_all, total_expense_all = get_all_stats()
+    chat_id = update.effective_chat.id
+    stats = get_today_stats_group(chat_id)
+    fee_rate, exchange_rate = get_group_rates(chat_id)
+    total_income_all, total_expense_all = get_all_stats_group(chat_id)
     today_balance = stats['income_hkd'] - stats['expense_hkd']
     today_balance_u = today_balance / exchange_rate
     cumulative_balance = total_income_all - total_expense_all
@@ -401,8 +431,9 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_stats_only(update, context)
 
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     await update.message.reply_text("📊 正在生成報表，請稍候...")
-    filepath = export_to_csv()
+    filepath = export_to_csv_group(chat_id)
     if not filepath:
         await update.message.reply_text("📭 沒有任何交易記錄可匯出")
         return
@@ -414,26 +445,28 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 匯出失敗: {e}")
 
 async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     if not await is_admin(update):
         await update.message.reply_text("❌ 只有群組管理員才能使用此功能")
         return
-    last = get_last_transaction()
+    last = get_last_transaction_group(chat_id)
     if not last:
         await update.message.reply_text("❌ 沒有找到可撤銷的交易")
         return
     tid, ttype, amount, customer = last
     type_text = "入款" if ttype == 'income' else "下發"
-    if cancel_transaction(tid):
+    if cancel_transaction_group(chat_id, tid):
         await update.message.reply_text(f"✅ 已撤銷最後一筆{type_text}: {amount:,.2f} HKD (客戶: {customer})")
     else:
         await update.message.reply_text("❌ 撤銷失敗")
 
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     if not await is_admin(update):
         await update.message.reply_text("❌ 只有群組管理員才能使用記帳功能")
         return
     text = update.message.text.strip()
-    fee_rate, exchange_rate = get_current_rates()
+    fee_rate, exchange_rate = get_group_rates(chat_id)
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
     if not update.message.reply_to_message:
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
@@ -444,57 +477,57 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
-        add_transaction('income', amount_hkd, amount_usdt, customer, operator)
+        add_transaction_group(chat_id, 'income', amount_hkd, amount_usdt, customer, operator)
         await show_stats_only(update, context)
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
-        add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
+        add_transaction_group(chat_id, 'expense', amount_hkd, amount_usdt, customer, operator)
         await show_stats_only(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
+def calculate_income(amount_hkd, fee_rate, exchange_rate):
+    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
+
+def calculate_expense(amount_hkd, exchange_rate):
+    return amount_hkd / exchange_rate
+
 # ========== 定時報表功能 ==========
 async def send_daily_report(app):
     """每晚11:59自動發送今日明細到所有群組"""
-    # 獲取今日交易記錄
-    transactions = get_today_transactions()
-    fee_rate, exchange_rate = get_current_rates()
-    
-    if not transactions:
-        report = "📭 今日無交易記錄"
-    else:
-        incomes = []
-        expenses = []
-        for type, hkd, usdt, customer, operator, date in transactions:
-            time = date.split()[1][:5] if date else ""
-            if type == 'income':
-                incomes.append((time, hkd, usdt, customer, operator))
-            else:
-                expenses.append((time, hkd, usdt, customer, operator))
-        
-        report = ""
-        if incomes:
-            report += f"📊 今日入款（{len(incomes)}笔）\n"
-            for time, hkd, usdt, customer, operator in incomes:
-                report += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-            report += "\n"
-        if expenses:
-            report += f"📊 今日下发（{len(expenses)}笔）\n"
-            for time, hkd, usdt, customer, operator in expenses:
-                report += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-    
-    # 獲取所有群組
     groups = get_all_groups()
     
-    if not groups:
-        print("⚠️ 沒有記錄任何群組，定時報表未發送")
-        return
-    
-    # 發送到所有群組
     for chat_id in groups:
+        # 獲取該群組的今日交易記錄
+        transactions = get_today_transactions_group(chat_id)
+        fee_rate, exchange_rate = get_group_rates(chat_id)
+        
+        if not transactions:
+            report = "📭 今日無交易記錄"
+        else:
+            incomes = []
+            expenses = []
+            for type, hkd, usdt, customer, operator, date in transactions:
+                time = date.split()[1][:5] if date else ""
+                if type == 'income':
+                    incomes.append((time, hkd, usdt, customer, operator))
+                else:
+                    expenses.append((time, hkd, usdt, customer, operator))
+            
+            report = ""
+            if incomes:
+                report += f"📊 今日入款（{len(incomes)}笔）\n"
+                for time, hkd, usdt, customer, operator in incomes:
+                    report += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+                report += "\n"
+            if expenses:
+                report += f"📊 今日下发（{len(expenses)}笔）\n"
+                for time, hkd, usdt, customer, operator in expenses:
+                    report += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+        
         try:
             await app.bot.send_message(chat_id=chat_id, text=report)
             print(f"✅ 定時報表已發送到群組 {chat_id}")
@@ -503,7 +536,7 @@ async def send_daily_report(app):
 
 # ========== 主程式 ==========
 def main():
-    init_db()
+    init_groups_table()
     
     # 建立應用程式
     app = Application.builder().token(TOKEN).build()
@@ -530,11 +563,10 @@ def main():
     scheduler.start()
     
     print("🤖 財務記帳機器人啟動中...")
-    print(f"✅ 當前費率: {get_current_rates()[0]}% | 匯率: {get_current_rates()[1]}")
-    print(f"✅ 當前時間: {get_hk_time_str()}")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
     print("⏰ 定時報表已設定: 每晚 23:59 自動發送到所有群組")
+    print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     
     app.run_polling()
 
