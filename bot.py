@@ -3,10 +3,12 @@ import re
 import csv
 import os
 import threading
+import asyncio
 import psycopg2
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ========== 設定香港時區 ==========
 HONG_KONG_TZ = timezone(timedelta(hours=8))
@@ -35,12 +37,46 @@ ADMIN_USER_IDS = []
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
+# ========== 初始化群組表 ==========
+def init_groups_table():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS groups (
+            id BIGINT PRIMARY KEY,
+            name TEXT,
+            added_at TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_group(chat_id, chat_name):
+    """記錄群組"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO groups (id, name, added_at) 
+        VALUES (%s, %s, %s) 
+        ON CONFLICT (id) DO NOTHING
+    ''', (chat_id, chat_name, get_hk_time_str()))
+    conn.commit()
+    conn.close()
+
+def get_all_groups():
+    """獲取所有群組 ID"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id FROM groups")
+    groups = [row[0] for row in c.fetchall()]
+    conn.close()
+    return groups
+
 # ========== 資料庫初始化 ==========
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # 創建交易記錄表
     c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
@@ -53,7 +89,6 @@ def init_db():
         )
     ''')
     
-    # 創建設定表
     c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             id SERIAL PRIMARY KEY,
@@ -63,7 +98,6 @@ def init_db():
         )
     ''')
     
-    # 檢查是否有設定，如果沒有就插入默認值
     c.execute("SELECT COUNT(*) FROM settings")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
@@ -71,6 +105,9 @@ def init_db():
     
     conn.commit()
     conn.close()
+    
+    # 初始化群組表
+    init_groups_table()
 
 def get_current_rates():
     conn = get_db_connection()
@@ -222,6 +259,13 @@ def export_to_csv():
 # ========== Telegram 命令 ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_db()
+    
+    # 記錄群組
+    chat = update.effective_chat
+    if chat.type in ['group', 'supergroup']:
+        add_group(chat.id, chat.title)
+        await update.message.reply_text(f"✅ 本群組已加入定時報表列表，每晚 11:59 會自動發送今日明細")
+    
     fee_rate, exchange_rate = get_current_rates()
     text = f"""💼 財務公司記帳機器人
 
@@ -235,14 +279,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2️⃣ 下發: 引用客戶訊息，輸入 -金額
 
 查看報表:
-/list - 今日明細 + 累積結餘
+/list - 今日明細
 /stats - 今日統計
 /export - 匯出 Excel 報表
 /undo - 撤銷最後一筆
 
 管理設定:
 /fee 3.5 - 設置費率
-/rate 7.9 - 設置匯率"""
+/rate 7.9 - 設置匯率
+
+定時報表:
+每晚 11:59 自動發送今日明細到所有群組"""
     await update.message.reply_text(text)
 
 async def set_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,6 +339,37 @@ async def is_admin(update: Update) -> bool:
     except:
         return False
 
+async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """只顯示今日明細（入款/下發逐筆記錄）"""
+    transactions = get_today_transactions()
+    fee_rate, exchange_rate = get_current_rates()
+    
+    if not transactions:
+        await update.message.reply_text("📭 今日暫無交易記錄")
+        return
+    
+    incomes = []
+    expenses = []
+    for type, hkd, usdt, customer, operator, date in transactions:
+        time = date.split()[1][:5] if date else ""
+        if type == 'income':
+            incomes.append((time, hkd, usdt, customer, operator))
+        else:
+            expenses.append((time, hkd, usdt, customer, operator))
+    
+    text = ""
+    if incomes:
+        text += f"今日入款（{len(incomes)}笔）\n"
+        for time, hkd, usdt, customer, operator in incomes:
+            text += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+        text += "\n"
+    if expenses:
+        text += f"今日下发（{len(expenses)}笔）\n"
+        for time, hkd, usdt, customer, operator in expenses:
+            text += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+    
+    await update.message.reply_text(text)
+
 async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """只顯示統計（記帳後用）"""
     stats = get_today_stats()
@@ -317,54 +395,6 @@ async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
 累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u
 累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"""
     await update.message.reply_text(text)
-
-async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """顯示完整明細（今日入款/下發逐筆 + 統計）"""
-    transactions = get_today_transactions()
-    fee_rate, exchange_rate = get_current_rates()
-    total_income_all, total_expense_all = get_all_stats()
-    cumulative_balance = total_income_all - total_expense_all
-    cumulative_balance_u = cumulative_balance / exchange_rate
-    
-    if transactions:
-        incomes = []
-        expenses = []
-        for type, hkd, usdt, customer, operator, date in transactions:
-            time = date.split()[1][:5] if date else ""
-            if type == 'income':
-                incomes.append((time, hkd, usdt, customer, operator))
-            else:
-                expenses.append((time, hkd, usdt, customer, operator))
-        stats = get_today_stats()
-        income_today = stats['income_hkd']
-        expense_today = stats['expense_hkd']
-        text = ""
-        if incomes:
-            text += f"今日入款（{len(incomes)}笔）\n"
-            for time, hkd, usdt, customer, operator in incomes:
-                text += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-            text += "\n"
-        if expenses:
-            text += f"今日下发（{len(expenses)}笔）\n"
-            for time, hkd, usdt, customer, operator in expenses:
-                text += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-            text += "\n"
-        text += f"📊 今日統計\n"
-        text += f"今日入款: {income_today:,.1f} HKD\n"
-        text += f"今日下發: {expense_today:,.1f} HKD\n"
-        text += f"今日結餘: {income_today - expense_today:,.1f} HKD\n\n"
-        text += f"📈 累積結餘\n"
-        text += f"總入款金額: {total_income_all:,.1f} HKD\n"
-        text += f"總下發金額: {total_expense_all:,.1f} HKD\n"
-        text += f"費率: {fee_rate}%\n"
-        text += f"固定匯率: {exchange_rate}\n\n"
-        text += f"累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u\n"
-        text += f"累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u\n"
-        text += f"累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"
-        await update.message.reply_text(text)
-    else:
-        text = f"📊 今日無交易記錄\n\n📈 累積結餘\n總入款金額: {total_income_all:,.1f} HKD\n總下發金額: {total_expense_all:,.1f} HKD\n費率: {fee_rate}%\n固定匯率: {exchange_rate}\n\n累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u\n累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u\n累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"
-        await update.message.reply_text(text)
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """今日統計（保留兼容）"""
@@ -426,10 +456,59 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
+# ========== 定時報表功能 ==========
+async def send_daily_report(app):
+    """每晚11:59自動發送今日明細到所有群組"""
+    # 獲取今日交易記錄
+    transactions = get_today_transactions()
+    fee_rate, exchange_rate = get_current_rates()
+    
+    if not transactions:
+        report = "📭 今日無交易記錄"
+    else:
+        incomes = []
+        expenses = []
+        for type, hkd, usdt, customer, operator, date in transactions:
+            time = date.split()[1][:5] if date else ""
+            if type == 'income':
+                incomes.append((time, hkd, usdt, customer, operator))
+            else:
+                expenses.append((time, hkd, usdt, customer, operator))
+        
+        report = ""
+        if incomes:
+            report += f"📊 今日入款（{len(incomes)}笔）\n"
+            for time, hkd, usdt, customer, operator in incomes:
+                report += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+            report += "\n"
+        if expenses:
+            report += f"📊 今日下发（{len(expenses)}笔）\n"
+            for time, hkd, usdt, customer, operator in expenses:
+                report += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
+    
+    # 獲取所有群組
+    groups = get_all_groups()
+    
+    if not groups:
+        print("⚠️ 沒有記錄任何群組，定時報表未發送")
+        return
+    
+    # 發送到所有群組
+    for chat_id in groups:
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=report)
+            print(f"✅ 定時報表已發送到群組 {chat_id}")
+        except Exception as e:
+            print(f"❌ 發送到群組 {chat_id} 失敗: {e}")
+
 # ========== 主程式 ==========
 def main():
     init_db()
+    
+    # 建立應用程式
     app = Application.builder().token(TOKEN).build()
+    
+    # 註冊命令
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("fee", set_fee))
     app.add_handler(CommandHandler("rate", set_exchange))
@@ -438,11 +517,25 @@ def main():
     app.add_handler(CommandHandler("export", export_excel))
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
+    
+    # 設定定時報表（每晚 23:59）
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        lambda: asyncio.create_task(send_daily_report(app)),
+        'cron',
+        hour=23,
+        minute=59,
+        id='daily_report'
+    )
+    scheduler.start()
+    
     print("🤖 財務記帳機器人啟動中...")
     print(f"✅ 當前費率: {get_current_rates()[0]}% | 匯率: {get_current_rates()[1]}")
     print(f"✅ 當前時間: {get_hk_time_str()}")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
+    print("⏰ 定時報表已設定: 每晚 23:59 自動發送到所有群組")
+    
     app.run_polling()
 
 if __name__ == "__main__":
