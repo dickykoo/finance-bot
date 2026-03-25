@@ -3,6 +3,7 @@ import re
 import csv
 import os
 import threading
+import psycopg2
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -24,58 +25,71 @@ def get_hk_date():
 
 # ========== 配置 ==========
 TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 DEFAULT_FEE_RATE = 3.5
 DEFAULT_EXCHANGE_RATE = 7.9
 
 ADMIN_USER_IDS = []
 
-# ========== 權限檢查 ==========
-async def is_admin(update: Update) -> bool:
-    try:
-        user_id = update.effective_user.id
-        if user_id in ADMIN_USER_IDS:
-            return True
-        if update.effective_chat.type == 'private':
-            return True
-        if update.effective_chat.type in ['group', 'supergroup']:
-            try:
-                bot = update.get_bot()
-                chat_member = await bot.get_chat_member(update.effective_chat.id, user_id)
-                if chat_member.status in ['administrator', 'creator']:
-                    return True
-            except:
-                return False
-        return False
-    except:
-        return False
+# ========== 資料庫連接 ==========
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
-# ========== 資料庫 ==========
+# ========== 資料庫初始化 ==========
 def init_db():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, amount_hkd REAL, amount_usdt REAL, customer TEXT, operator TEXT, date TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY AUTOINCREMENT, fee_rate REAL, exchange_rate REAL, updated_at TEXT)')
+    
+    # 創建交易記錄表
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS transactions (
+            id SERIAL PRIMARY KEY,
+            type TEXT,
+            amount_hkd REAL,
+            amount_usdt REAL,
+            customer TEXT,
+            operator TEXT,
+            date TEXT
+        )
+    ''')
+    
+    # 創建設定表
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            id SERIAL PRIMARY KEY,
+            fee_rate REAL,
+            exchange_rate REAL,
+            updated_at TEXT
+        )
+    ''')
+    
+    # 檢查是否有設定，如果沒有就插入默認值
     c.execute("SELECT COUNT(*) FROM settings")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE, get_hk_time_str()))
+        c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
+                  (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE, get_hk_time_str()))
+    
     conn.commit()
     conn.close()
 
 def get_current_rates():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT fee_rate, exchange_rate FROM settings ORDER BY id DESC LIMIT 1")
     result = c.fetchone()
     conn.close()
-    return result if result else (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE)
+    if result:
+        return result[0], result[1]
+    return DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE
 
 def update_rates(fee_rate=None, exchange_rate=None):
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     current_fee, current_exchange = get_current_rates()
     new_fee = fee_rate if fee_rate is not None else current_fee
     new_exchange = exchange_rate if exchange_rate is not None else current_exchange
-    c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (new_fee, new_exchange, get_hk_time_str()))
+    c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
+              (new_fee, new_exchange, get_hk_time_str()))
     conn.commit()
     conn.close()
 
@@ -86,29 +100,29 @@ def calculate_expense(amount_hkd, exchange_rate):
     return amount_hkd / exchange_rate
 
 def add_transaction(type, amount_hkd, amount_usdt, customer, operator):
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO transactions (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (?, ?, ?, ?, ?, ?)", 
+    c.execute("INSERT INTO transactions (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s)",
               (type, amount_hkd, amount_usdt, customer, operator, get_hk_time_str()))
     conn.commit()
     conn.close()
 
 def get_today_transactions():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions WHERE date LIKE ? ORDER BY date ASC", (f"{today}%",))
+    c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
     results = c.fetchall()
     conn.close()
     return results
 
 def get_today_stats():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'income' AND date LIKE ?", (f"{today}%",))
+    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
     income_hkd, income_usdt = c.fetchone() or (0, 0)
-    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'expense' AND date LIKE ?", (f"{today}%",))
+    c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
     expense_hkd, expense_usdt = c.fetchone() or (0, 0)
     conn.close()
     income_hkd = income_hkd or 0
@@ -123,7 +137,7 @@ def get_today_stats():
     }
 
 def get_all_stats():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT SUM(amount_hkd) FROM transactions WHERE type = 'income'")
     total_income_all = c.fetchone()[0] or 0
@@ -133,7 +147,7 @@ def get_all_stats():
     return total_income_all, total_expense_all
 
 def get_all_transactions():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, type, amount_hkd, amount_usdt, customer, operator, date FROM transactions ORDER BY date DESC")
     results = c.fetchall()
@@ -141,7 +155,7 @@ def get_all_transactions():
     return results
 
 def get_last_transaction():
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT id, type, amount_hkd, customer FROM transactions ORDER BY date DESC LIMIT 1")
     result = c.fetchone()
@@ -149,21 +163,16 @@ def get_last_transaction():
     return result
 
 def cancel_transaction(transaction_id):
-    conn = sqlite3.connect('finance.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
+    c.execute("DELETE FROM transactions WHERE id = %s", (transaction_id,))
     conn.commit()
     affected = c.rowcount
     conn.close()
     return affected > 0
 
 def export_to_csv():
-    conn = sqlite3.connect('finance.db')
-    c = conn.cursor()
-    c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions ORDER BY date ASC")
-    transactions = c.fetchall()
-    conn.close()
-    
+    transactions = get_all_transactions()
     if not transactions:
         return None
     
@@ -209,23 +218,6 @@ def export_to_csv():
         writer.writerow(['最終累積結餘 (USDT)', f"{cumulative_balance / exchange_rate:.2f}"])
     
     return filepath
-
-# ========== Sample 數據 ==========
-SAMPLE_INCOMES = [
-    ("17:43:46", 10000, 1221.52, "Bella", "Bella"),
-    ("21:58:08", 5000, 610.76, "Wilson", "Wilson"),
-    ("18:34:44", 4000, 488.61, "Bella", "Bella"),
-    ("23:54:13", 3000, 366.46, "Wilson", "Wilson"),
-    ("11:50:35", 1500, 183.23, "Wilson", "Wilson"),
-]
-
-SAMPLE_EXPENSES = [
-    ("12:32:55", 9000, 1139.24, "大隻佬", "大隻佬"),
-    ("14:36:10", 885, 112.03, "大隻佬", "大隻佬"),
-    ("14:59:45", 1800, 227.85, "大隻佬", "大隻佬"),
-    ("21:57:10", 7000, 886.08, "陳偉霆", "陳偉霆"),
-    ("14:05:14", 3000, 379.75, "Bella", "Bella"),
-]
 
 # ========== Telegram 命令 ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,6 +273,25 @@ async def set_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ 請輸入有效的數字")
 
+async def is_admin(update: Update) -> bool:
+    try:
+        user_id = update.effective_user.id
+        if user_id in ADMIN_USER_IDS:
+            return True
+        if update.effective_chat.type == 'private':
+            return True
+        if update.effective_chat.type in ['group', 'supergroup']:
+            try:
+                bot = update.get_bot()
+                chat_member = await bot.get_chat_member(update.effective_chat.id, user_id)
+                if chat_member.status in ['administrator', 'creator']:
+                    return True
+            except:
+                return False
+        return False
+    except:
+        return False
+
 async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """只顯示統計（記帳後用）"""
     stats = get_today_stats()
@@ -296,7 +307,7 @@ async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
 今日下發: {stats['expense_hkd']:,.1f} HKD
 今日結餘: {today_balance:,.1f} HKD
 
-📈 累積結餘 (開業至今)
+📈 累積結餘
 總入款金額: {total_income_all:,.1f} HKD
 總下發金額: {total_expense_all:,.1f} HKD
 費率: {fee_rate}%
@@ -342,7 +353,7 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"今日入款: {income_today:,.1f} HKD\n"
         text += f"今日下發: {expense_today:,.1f} HKD\n"
         text += f"今日結餘: {income_today - expense_today:,.1f} HKD\n\n"
-        text += f"📈 累積結餘 (開業至今)\n"
+        text += f"📈 累積結餘\n"
         text += f"總入款金額: {total_income_all:,.1f} HKD\n"
         text += f"總下發金額: {total_expense_all:,.1f} HKD\n"
         text += f"費率: {fee_rate}%\n"
@@ -352,7 +363,7 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"
         await update.message.reply_text(text)
     else:
-        text = f"📊 今日無交易記錄\n\n📈 累積結餘 (開業至今)\n總入款金額: {total_income_all:,.1f} HKD\n總下發金額: {total_expense_all:,.1f} HKD\n費率: {fee_rate}%\n固定匯率: {exchange_rate}\n\n累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u\n累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u\n累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"
+        text = f"📊 今日無交易記錄\n\n📈 累積結餘\n總入款金額: {total_income_all:,.1f} HKD\n總下發金額: {total_expense_all:,.1f} HKD\n費率: {fee_rate}%\n固定匯率: {exchange_rate}\n\n累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u\n累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u\n累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"
         await update.message.reply_text(text)
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,7 +415,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
         add_transaction('income', amount_hkd, amount_usdt, customer, operator)
-        # 只顯示統計（不顯示明細）
         await show_stats_only(update, context)
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
@@ -412,7 +422,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
         add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
-        # 只顯示統計（不顯示明細）
         await show_stats_only(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
