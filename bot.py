@@ -393,9 +393,9 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
         add_transaction('income', amount_hkd, amount_usdt, customer, operator)
-        # 顯示今日的入款記錄
+        # 顯示單筆記錄
         await update.message.reply_text(
-            f"{datetime.now().strftime('%H:%M')}  {amount_hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
+            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
         )
         # 顯示完整報表
         await show_list(update, context)
@@ -405,9 +405,9 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
         add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
-        # 顯示今日的下發記錄
+        # 顯示單筆記錄
         await update.message.reply_text(
-            f"{datetime.now().strftime('%H:%M')}  {amount_hkd:.0f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
+            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
         )
         # 顯示完整報表
         await show_list(update, context)
