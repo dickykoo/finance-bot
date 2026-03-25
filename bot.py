@@ -281,7 +281,34 @@ async def set_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ 請輸入有效的數字")
 
+async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """只顯示統計（記帳後用）"""
+    stats = get_today_stats()
+    fee_rate, exchange_rate = get_current_rates()
+    total_income_all, total_expense_all = get_all_stats()
+    today_balance = stats['income_hkd'] - stats['expense_hkd']
+    today_balance_u = today_balance / exchange_rate
+    cumulative_balance = total_income_all - total_expense_all
+    cumulative_balance_u = cumulative_balance / exchange_rate
+    
+    text = f"""📊 今日統計
+今日入款: {stats['income_hkd']:,.1f} HKD
+今日下發: {stats['expense_hkd']:,.1f} HKD
+今日結餘: {today_balance:,.1f} HKD
+
+📈 累積結餘 (開業至今)
+總入款金額: {total_income_all:,.1f} HKD
+總下發金額: {total_expense_all:,.1f} HKD
+費率: {fee_rate}%
+固定匯率: {exchange_rate}
+
+累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u
+累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u
+累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"""
+    await update.message.reply_text(text)
+
 async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """顯示完整明細（今日入款/下發逐筆 + 統計）"""
     transactions = get_today_transactions()
     fee_rate, exchange_rate = get_current_rates()
     total_income_all, total_expense_all = get_all_stats()
@@ -329,39 +356,8 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text)
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = get_today_stats()
-    fee_rate, exchange_rate = get_current_rates()
-    total_income_all, total_expense_all = get_all_stats()
-    today_balance = stats['income_hkd'] - stats['expense_hkd']
-    today_balance_u = today_balance / exchange_rate
-    cumulative_balance = total_income_all - total_expense_all
-    cumulative_balance_u = cumulative_balance / exchange_rate
-    text = f"""📊 今日財務報表
-日期: {get_hk_date()}
-─────────────────
-💰 今日入款
-港幣: {stats['income_hkd']:,.2f} HKD
-USDT: {stats['income_usdt']:,.2f} U
-
-💸 今日下發
-港幣: {stats['expense_hkd']:,.2f} HKD
-USDT: {stats['expense_usdt']:,.2f} U
-
-─────────────────
-📈 今日結餘
-港幣: {today_balance:,.2f} HKD
-USDT: {today_balance_u:.2f} U
-
-─────────────────
-📊 累積結餘 (開業至今)
-總入款: {total_income_all:,.2f} HKD
-總下發: {total_expense_all:,.2f} HKD
-累積結餘: {cumulative_balance:,.2f} HKD | {cumulative_balance_u:.2f} U
-
-─────────────────
-⚙️ 設定
-費率: {fee_rate}% | 匯率: {exchange_rate}"""
-    await update.message.reply_text(text)
+    """今日統計（保留兼容）"""
+    await show_stats_only(update, context)
 
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 正在生成報表，請稍候...")
@@ -408,16 +404,16 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
         add_transaction('income', amount_hkd, amount_usdt, customer, operator)
-        # 只顯示完整報表
-        await show_list(update, context)
+        # 只顯示統計（不顯示明細）
+        await show_stats_only(update, context)
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
         add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
-        # 只顯示完整報表
-        await show_list(update, context)
+        # 只顯示統計（不顯示明細）
+        await show_stats_only(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
