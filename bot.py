@@ -215,7 +215,7 @@ def export_to_csv():
     
     fee_rate, exchange_rate = get_current_rates()
     daily_data = {}
-    for type, hkd, usdt, customer, operator, date in transactions:
+    for id, type, hkd, usdt, customer, operator, date in transactions:
         date_str = date.split()[0]
         if date_str not in daily_data:
             daily_data[date_str] = {'income': 0, 'expense': 0}
