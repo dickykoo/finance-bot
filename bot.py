@@ -3,9 +3,24 @@ import re
 import csv
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+
+# ========== 設定香港時區 ==========
+HONG_KONG_TZ = timezone(timedelta(hours=8))
+
+def get_hk_time():
+    """獲取香港時間"""
+    return datetime.now(HONG_KONG_TZ)
+
+def get_hk_time_str():
+    """獲取香港時間字串"""
+    return get_hk_time().strftime("%Y-%m-%d %H:%M:%S")
+
+def get_hk_date():
+    """獲取香港日期"""
+    return get_hk_time().strftime("%Y-%m-%d")
 
 # ========== 配置 ==========
 TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
@@ -42,7 +57,7 @@ def init_db():
     c.execute('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY AUTOINCREMENT, fee_rate REAL, exchange_rate REAL, updated_at TEXT)')
     c.execute("SELECT COUNT(*) FROM settings")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (DEFAULT_FEE_RATE, DEFAULT_EXCHANGE_RATE, get_hk_time_str()))
     conn.commit()
     conn.close()
 
@@ -60,7 +75,7 @@ def update_rates(fee_rate=None, exchange_rate=None):
     current_fee, current_exchange = get_current_rates()
     new_fee = fee_rate if fee_rate is not None else current_fee
     new_exchange = exchange_rate if exchange_rate is not None else current_exchange
-    c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (new_fee, new_exchange, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute("INSERT INTO settings (fee_rate, exchange_rate, updated_at) VALUES (?, ?, ?)", (new_fee, new_exchange, get_hk_time_str()))
     conn.commit()
     conn.close()
 
@@ -74,14 +89,14 @@ def add_transaction(type, amount_hkd, amount_usdt, customer, operator):
     conn = sqlite3.connect('finance.db')
     c = conn.cursor()
     c.execute("INSERT INTO transactions (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (?, ?, ?, ?, ?, ?)", 
-              (type, amount_hkd, amount_usdt, customer, operator, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+              (type, amount_hkd, amount_usdt, customer, operator, get_hk_time_str()))
     conn.commit()
     conn.close()
 
 def get_today_transactions():
     conn = sqlite3.connect('finance.db')
     c = conn.cursor()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_hk_date()
     c.execute("SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM transactions WHERE date LIKE ? ORDER BY date ASC", (f"{today}%",))
     results = c.fetchall()
     conn.close()
@@ -90,7 +105,7 @@ def get_today_transactions():
 def get_today_stats():
     conn = sqlite3.connect('finance.db')
     c = conn.cursor()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_hk_date()
     c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'income' AND date LIKE ?", (f"{today}%",))
     income_hkd, income_usdt = c.fetchone() or (0, 0)
     c.execute("SELECT SUM(amount_hkd), SUM(amount_usdt) FROM transactions WHERE type = 'expense' AND date LIKE ?", (f"{today}%",))
@@ -164,13 +179,13 @@ def export_to_csv():
             daily_data[date_str]['expense'] += hkd
     
     sorted_dates = sorted(daily_data.keys())
-    filename = f"daily_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"daily_report_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
     filepath = os.path.join(os.path.dirname(__file__), filename)
     
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(['每日財務明細報表'])
-        writer.writerow(['生成時間', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        writer.writerow(['生成時間', get_hk_time_str()])
         writer.writerow(['費率', f"{fee_rate}%"])
         writer.writerow(['匯率', str(exchange_rate)])
         writer.writerow([])
@@ -322,7 +337,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cumulative_balance = total_income_all - total_expense_all
     cumulative_balance_u = cumulative_balance / exchange_rate
     text = f"""📊 今日財務報表
-日期: {datetime.now().strftime("%Y-%m-%d")}
+日期: {get_hk_date()}
 ─────────────────
 💰 今日入款
 港幣: {stats['income_hkd']:,.2f} HKD
@@ -356,7 +371,7 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         with open(filepath, 'rb') as f:
-            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 每日財務明細報表\n生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 每日財務明細報表\n生成時間: {get_hk_time_str()}")
         os.remove(filepath)
     except Exception as e:
         await update.message.reply_text(f"❌ 匯出失敗: {e}")
@@ -393,11 +408,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
         add_transaction('income', amount_hkd, amount_usdt, customer, operator)
-        # 顯示單筆記錄
-        await update.message.reply_text(
-            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
-        )
-        # 顯示完整報表
+        # 只顯示完整報表
         await show_list(update, context)
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
@@ -405,11 +416,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
         add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
-        # 顯示單筆記錄
-        await update.message.reply_text(
-            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
-        )
-        # 顯示完整報表
+        # 只顯示完整報表
         await show_list(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
@@ -428,6 +435,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     print("🤖 財務記帳機器人啟動中...")
     print(f"✅ 當前費率: {get_current_rates()[0]}% | 匯率: {get_current_rates()[1]}")
+    print(f"✅ 當前時間: {get_hk_time_str()}")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
     app.run_polling()
