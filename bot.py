@@ -33,6 +33,11 @@ DEFAULT_EXCHANGE_RATE = 7.9
 
 ADMIN_USER_IDS = []
 
+# ========== 輔助函數：將群組ID轉換為安全表名 ==========
+def safe_table_name(chat_id):
+    """將群組ID轉換為安全的表名（將 - 替換為 _）"""
+    return str(chat_id).replace('-', '_')
+
 # ========== 資料庫連接 ==========
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -77,7 +82,8 @@ def init_group_table(chat_id):
     """為群組創建獨立的交易記錄表"""
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     c.execute(f'''
         CREATE TABLE IF NOT EXISTS {table_name} (
             id SERIAL PRIMARY KEY,
@@ -91,7 +97,7 @@ def init_group_table(chat_id):
     ''')
     
     # 同時創建設定表（每個群組獨立費率匯率）
-    settings_table = f"settings_{chat_id}"
+    settings_table = f"settings_{safe_id}"
     c.execute(f'''
         CREATE TABLE IF NOT EXISTS {settings_table} (
             id SERIAL PRIMARY KEY,
@@ -114,7 +120,8 @@ def init_group_table(chat_id):
 def get_group_rates(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"settings_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"settings_{safe_id}"
     try:
         c.execute(f"SELECT fee_rate, exchange_rate FROM {table_name} ORDER BY id DESC LIMIT 1")
         result = c.fetchone()
@@ -132,7 +139,8 @@ def update_group_rates(chat_id, fee_rate=None, exchange_rate=None):
     current_fee, current_exchange = get_group_rates(chat_id)
     new_fee = fee_rate if fee_rate is not None else current_fee
     new_exchange = exchange_rate if exchange_rate is not None else current_exchange
-    table_name = f"settings_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"settings_{safe_id}"
     c.execute(f"INSERT INTO {table_name} (fee_rate, exchange_rate, updated_at) VALUES (%s, %s, %s)",
               (new_fee, new_exchange, get_hk_time_str()))
     conn.commit()
@@ -143,7 +151,8 @@ def update_group_rates(chat_id, fee_rate=None, exchange_rate=None):
 def add_transaction_group(chat_id, type, amount_hkd, amount_usdt, customer, operator):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     c.execute(f"INSERT INTO {table_name} (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s)",
               (type, amount_hkd, amount_usdt, customer, operator, get_hk_time_str()))
     conn.commit()
@@ -153,7 +162,8 @@ def get_today_transactions_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     try:
         c.execute(f"SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
         results = c.fetchall()
@@ -166,7 +176,8 @@ def get_today_stats_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
     today = get_hk_date()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     try:
         c.execute(f"SELECT SUM(amount_hkd), SUM(amount_usdt) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
         income_hkd, income_usdt = c.fetchone() or (0, 0)
@@ -190,7 +201,8 @@ def get_today_stats_group(chat_id):
 def get_all_stats_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     try:
         c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'income'")
         total_income_all = c.fetchone()[0] or 0
@@ -204,7 +216,8 @@ def get_all_stats_group(chat_id):
 def get_last_transaction_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     try:
         c.execute(f"SELECT id, type, amount_hkd, customer FROM {table_name} ORDER BY date DESC LIMIT 1")
         result = c.fetchone()
@@ -216,7 +229,8 @@ def get_last_transaction_group(chat_id):
 def cancel_transaction_group(chat_id, transaction_id):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     c.execute(f"DELETE FROM {table_name} WHERE id = %s", (transaction_id,))
     conn.commit()
     affected = c.rowcount
@@ -226,7 +240,8 @@ def cancel_transaction_group(chat_id, transaction_id):
 def export_to_csv_group(chat_id):
     conn = get_db_connection()
     c = conn.cursor()
-    table_name = f"transactions_{chat_id}"
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
     try:
         c.execute(f"SELECT id, type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} ORDER BY date DESC")
         transactions = c.fetchall()
@@ -249,7 +264,7 @@ def export_to_csv_group(chat_id):
             daily_data[date_str]['expense'] += hkd
     
     sorted_dates = sorted(daily_data.keys())
-    filename = f"daily_report_{chat_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"daily_report_{safe_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
     filepath = os.path.join(os.path.dirname(__file__), filename)
     
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
@@ -460,6 +475,12 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ 撤銷失敗")
 
+def calculate_income(amount_hkd, fee_rate, exchange_rate):
+    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
+
+def calculate_expense(amount_hkd, exchange_rate):
+    return amount_hkd / exchange_rate
+
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not await is_admin(update):
@@ -488,12 +509,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_stats_only(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
-
-def calculate_income(amount_hkd, fee_rate, exchange_rate):
-    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
-
-def calculate_expense(amount_hkd, exchange_rate):
-    return amount_hkd / exchange_rate
 
 # ========== 定時報表功能 ==========
 async def send_daily_report(app):
