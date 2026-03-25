@@ -384,7 +384,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fee_rate, exchange_rate = get_current_rates()
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
     if not update.message.reply_to_message:
-        await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如: 引用客戶的訊息後輸入 +5000 或 -3000")
+        await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
     replied_user = update.message.reply_to_message.from_user
     customer = replied_user.first_name or replied_user.username or "未知客戶"
@@ -393,16 +393,22 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
         add_transaction('income', amount_hkd, amount_usdt, customer, operator)
-        await update.message.reply_text(f"✅ 入款記錄\n{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={amount_usdt:.2f}U\n客戶: {customer}  |  操作人: {operator}")
+        # 顯示和 /list 一樣的格式
+        await update.message.reply_text(
+            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
+        )
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
         add_transaction('expense', amount_hkd, amount_usdt, customer, operator)
-        await update.message.reply_text(f"✅ 下發記錄\n{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f} / {exchange_rate}={amount_usdt:.2f}U\n客戶: {customer}  |  操作人: {operator}")
+        # 顯示和 /list 一樣的格式
+        await update.message.reply_text(
+            f"{datetime.now().strftime('%H:%M:%S')}  {amount_hkd:.0f} / {exchange_rate}={amount_usdt:.2f}U   {customer}  {operator}"
+        )
         return
-    await update.message.reply_text("❌ 格式錯誤\n\n正確格式:\n引用客戶訊息後輸入:\n+金額  → 入款\n-金額  → 下發\n\n例如: +5000 或 -3000")
+    await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
 # ========== 主程式 ==========
 def main():
