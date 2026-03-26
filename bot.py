@@ -511,18 +511,31 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 撤銷失敗")
 
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """處理記帳 - 只有 + 和 - 開頭的訊息才處理"""
+    text = update.message.text.strip()
+    
+    # 如果不是以 + 或 - 開頭，直接忽略
+    if not text.startswith('+') and not text.startswith('-'):
+        return
+    
     chat_id = update.effective_chat.id
+    
+    # 檢查權限
     if not await is_admin(update):
         await update.message.reply_text("❌ 只有群組管理員才能使用記帳功能")
         return
-    text = update.message.text.strip()
+    
     fee_rate, exchange_rate = get_group_rates(chat_id)
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
+    
+    # 檢查是否引用了客戶訊息
     if not update.message.reply_to_message:
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
+    
     replied_user = update.message.reply_to_message.from_user
     customer = replied_user.first_name or replied_user.username or "未知客戶"
+    
     match = re.match(r'^\+(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
@@ -531,6 +544,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         add_transaction_group(chat_id, 'income', amount_hkd, amount_usdt, actual_hkd, customer, operator)
         await show_stats_only(update, context)
         return
+    
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
@@ -538,6 +552,8 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         add_transaction_group(chat_id, 'expense', amount_hkd, amount_usdt, amount_hkd, customer, operator)
         await show_stats_only(update, context)
         return
+    
+    # 格式錯誤（以 + 或 - 開頭但格式不對）
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
 # ========== 定時報表功能 ==========
