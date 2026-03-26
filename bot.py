@@ -232,8 +232,21 @@ def get_all_stats_group(chat_id):
         total_expense = c.fetchone()[0] or 0
     except:
         total_income_actual, total_expense = 0, 0
-    conn.close()
     return total_income_actual, total_expense
+
+def get_total_income_original_group(chat_id):
+    """獲取原始入款總額（不扣費）"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    safe_id = safe_table_name(chat_id)
+    table_name = f"transactions_{safe_id}"
+    try:
+        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'income'")
+        total = c.fetchone()[0] or 0
+    except:
+        total = 0
+    conn.close()
+    return total
 
 def get_last_transaction_group(chat_id):
     conn = get_db_connection()
@@ -425,12 +438,12 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = ""
     if incomes:
-        text += f"今日入款（{len(incomes)}笔）\n"
+        text += f"今日入款（{len(incomes)}筆）\n"
         for time, hkd, usdt, customer, operator in incomes:
             text += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
         text += "\n"
     if expenses:
-        text += f"今日下发（{len(expenses)}笔）\n"
+        text += f"今日下發（{len(expenses)}筆）\n"
         for time, hkd, usdt, customer, operator in expenses:
             text += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
     
@@ -442,9 +455,8 @@ async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_today_stats_group(chat_id)
     fee_rate, exchange_rate = get_group_rates(chat_id)
     total_income_actual, total_expense = get_all_stats_group(chat_id)
+    total_income_original = get_total_income_original_group(chat_id)
     
-    today_balance = stats['income_actual'] - stats['expense_hkd']
-    today_balance_u = today_balance / exchange_rate
     cumulative_balance = total_income_actual - total_expense
     cumulative_balance_u = cumulative_balance / exchange_rate
     
@@ -452,10 +464,9 @@ async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
 今日入款: {stats['income_original']:,.1f} HKD
 今日實際入款 (扣費後): {stats['income_actual']:,.1f} HKD
 今日下發: {stats['expense_hkd']:,.1f} HKD
-今日結餘: {today_balance:,.1f} HKD
 
 📈 累積結餘
-總入款金額: {total_income_actual:,.1f} HKD
+總入款金額: {total_income_original:,.1f} HKD
 總下發金額: {total_expense:,.1f} HKD
 費率: {fee_rate}%
 固定匯率: {exchange_rate}
@@ -552,12 +563,12 @@ async def send_daily_report(app):
             
             report = ""
             if incomes:
-                report += f"📊 今日入款（{len(incomes)}笔）\n"
+                report += f"📊 今日入款（{len(incomes)}筆）\n"
                 for time, hkd, usdt, customer, operator in incomes:
                     report += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
                 report += "\n"
             if expenses:
-                report += f"📊 今日下发（{len(expenses)}笔）\n"
+                report += f"📊 今日下發（{len(expenses)}筆）\n"
                 for time, hkd, usdt, customer, operator in expenses:
                     report += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
         
@@ -582,11 +593,12 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
+    # 設定定時報表（UTC 15:59 = 香港 23:59）
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: asyncio.create_task(send_daily_report(app)),
         'cron',
-        hour=23,
+        hour=15,
         minute=59,
         id='daily_report'
     )
@@ -595,7 +607,7 @@ def main():
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
-    print("⏰ 定時報表已設定: 每晚 23:59 自動發送到所有群組")
+    print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送到所有群組")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
     
