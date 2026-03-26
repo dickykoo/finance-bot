@@ -343,7 +343,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！\n\n每晚 11:59 會自動發送今日明細到本群組")
     
     fee_rate, exchange_rate = get_group_rates(chat_id)
-    text = f"""💼 財務公司記帳機器人
+    text = f"""💼記帳機器人
 
 當前設定:
 📊 費率: {fee_rate}%
