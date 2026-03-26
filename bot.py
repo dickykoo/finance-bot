@@ -90,6 +90,7 @@ def init_group_table(chat_id):
             type TEXT,
             amount_hkd REAL,
             amount_usdt REAL,
+            actual_hkd REAL,
             customer TEXT,
             operator TEXT,
             date TEXT
@@ -147,14 +148,27 @@ def update_group_rates(chat_id, fee_rate=None, exchange_rate=None):
     conn.close()
     return new_fee, new_exchange
 
+# ========== 計算函數 ==========
+def calculate_income(amount_hkd, fee_rate, exchange_rate):
+    """入款：港幣 × (1 - 費率%) ÷ 匯率 = USDT"""
+    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
+
+def calculate_actual_hkd(amount_hkd, fee_rate):
+    """扣除費率後的實際港幣（應下發金額）"""
+    return amount_hkd * (1 - fee_rate / 100)
+
+def calculate_expense(amount_hkd, exchange_rate):
+    """下發：港幣 ÷ 匯率 = USDT"""
+    return amount_hkd / exchange_rate
+
 # ========== 交易操作（群組獨立）==========
-def add_transaction_group(chat_id, type, amount_hkd, amount_usdt, customer, operator):
+def add_transaction_group(chat_id, type, amount_hkd, amount_usdt, actual_hkd, customer, operator):
     conn = get_db_connection()
     c = conn.cursor()
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
-    c.execute(f"INSERT INTO {table_name} (type, amount_hkd, amount_usdt, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s)",
-              (type, amount_hkd, amount_usdt, customer, operator, get_hk_time_str()))
+    c.execute(f"INSERT INTO {table_name} (type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+              (type, amount_hkd, amount_usdt, actual_hkd, customer, operator, get_hk_time_str()))
     conn.commit()
     conn.close()
 
@@ -165,7 +179,7 @@ def get_today_transactions_group(chat_id):
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
     try:
-        c.execute(f"SELECT type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
+        c.execute(f"SELECT type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date FROM {table_name} WHERE date LIKE %s ORDER BY date ASC", (f"{today}%",))
         results = c.fetchall()
     except:
         results = []
@@ -179,20 +193,26 @@ def get_today_stats_group(chat_id):
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
     try:
-        c.execute(f"SELECT SUM(amount_hkd), SUM(amount_usdt) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
-        income_hkd, income_usdt = c.fetchone() or (0, 0)
-        c.execute(f"SELECT SUM(amount_hkd), SUM(amount_usdt) FROM {table_name} WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
-        expense_hkd, expense_usdt = c.fetchone() or (0, 0)
+        # 入款總額（原始港幣）
+        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
+        income_original = c.fetchone()[0] or 0
+        # 入款實際應下發總額（扣費後）
+        c.execute(f"SELECT SUM(actual_hkd) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
+        income_actual = c.fetchone()[0] or 0
+        # 入款 USDT 總額
+        c.execute(f"SELECT SUM(amount_usdt) FROM {table_name} WHERE type = 'income' AND date LIKE %s", (f"{today}%",))
+        income_usdt = c.fetchone()[0] or 0
+        # 下發總額
+        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
+        expense_hkd = c.fetchone()[0] or 0
+        c.execute(f"SELECT SUM(amount_usdt) FROM {table_name} WHERE type = 'expense' AND date LIKE %s", (f"{today}%",))
+        expense_usdt = c.fetchone()[0] or 0
     except:
-        income_hkd, income_usdt = 0, 0
-        expense_hkd, expense_usdt = 0, 0
+        income_original, income_actual, income_usdt, expense_hkd, expense_usdt = 0, 0, 0, 0, 0
     conn.close()
-    income_hkd = income_hkd or 0
-    income_usdt = income_usdt or 0
-    expense_hkd = expense_hkd or 0
-    expense_usdt = expense_usdt or 0
     return {
-        'income_hkd': income_hkd,
+        'income_original': income_original,
+        'income_actual': income_actual,
         'income_usdt': income_usdt,
         'expense_hkd': expense_hkd,
         'expense_usdt': expense_usdt
@@ -204,14 +224,16 @@ def get_all_stats_group(chat_id):
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
     try:
-        c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'income'")
-        total_income_all = c.fetchone()[0] or 0
+        # 所有入款實際應下發總額（扣費後）
+        c.execute(f"SELECT SUM(actual_hkd) FROM {table_name} WHERE type = 'income'")
+        total_income_actual = c.fetchone()[0] or 0
+        # 所有下發總額
         c.execute(f"SELECT SUM(amount_hkd) FROM {table_name} WHERE type = 'expense'")
-        total_expense_all = c.fetchone()[0] or 0
+        total_expense = c.fetchone()[0] or 0
     except:
-        total_income_all, total_expense_all = 0, 0
+        total_income_actual, total_expense = 0, 0
     conn.close()
-    return total_income_all, total_expense_all
+    return total_income_actual, total_expense
 
 def get_last_transaction_group(chat_id):
     conn = get_db_connection()
@@ -243,7 +265,7 @@ def export_to_csv_group(chat_id):
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
     try:
-        c.execute(f"SELECT id, type, amount_hkd, amount_usdt, customer, operator, date FROM {table_name} ORDER BY date DESC")
+        c.execute(f"SELECT id, type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date FROM {table_name} ORDER BY date DESC")
         transactions = c.fetchall()
     except:
         transactions = []
@@ -254,12 +276,13 @@ def export_to_csv_group(chat_id):
     
     fee_rate, exchange_rate = get_group_rates(chat_id)
     daily_data = {}
-    for id, type, hkd, usdt, customer, operator, date in transactions:
+    for id, type, hkd, usdt, actual_hkd, customer, operator, date in transactions:
         date_str = date.split()[0]
         if date_str not in daily_data:
-            daily_data[date_str] = {'income': 0, 'expense': 0}
+            daily_data[date_str] = {'income_original': 0, 'income_actual': 0, 'expense': 0}
         if type == 'income':
-            daily_data[date_str]['income'] += hkd
+            daily_data[date_str]['income_original'] += hkd
+            daily_data[date_str]['income_actual'] += actual_hkd
         else:
             daily_data[date_str]['expense'] += hkd
     
@@ -278,17 +301,18 @@ def export_to_csv_group(chat_id):
         
         cumulative_balance = 0
         for date_str in sorted_dates:
-            income = daily_data[date_str]['income']
+            income_original = daily_data[date_str]['income_original']
+            income_actual = daily_data[date_str]['income_actual']
             expense = daily_data[date_str]['expense']
-            fee_deduction = income * (fee_rate / 100)
-            actual_income = income - fee_deduction
-            daily_balance = actual_income - expense
+            fee_deduction = income_original - income_actual
+            daily_balance = income_actual - expense
             cumulative_balance += daily_balance
-            writer.writerow([date_str, f"{income:,.2f}", f"{fee_deduction:,.2f}", f"{actual_income:,.2f}", f"{expense:,.2f}", f"{daily_balance:,.2f}", f"{cumulative_balance:,.2f}"])
+            writer.writerow([date_str, f"{income_original:,.2f}", f"{fee_deduction:,.2f}", f"{income_actual:,.2f}", f"{expense:,.2f}", f"{daily_balance:,.2f}", f"{cumulative_balance:,.2f}"])
         
         writer.writerow([])
         writer.writerow(['=== 總結 ==='])
-        writer.writerow(['總入款 (HKD)', f"{sum(d['income'] for d in daily_data.values()):,.2f}"])
+        writer.writerow(['總入款 (HKD)', f"{sum(d['income_original'] for d in daily_data.values()):,.2f}"])
+        writer.writerow(['總實際入款 (HKD)', f"{sum(d['income_actual'] for d in daily_data.values()):,.2f}"])
         writer.writerow(['總下發 (HKD)', f"{sum(d['expense'] for d in daily_data.values()):,.2f}"])
         writer.writerow(['最終累積結餘 (HKD)', f"{cumulative_balance:,.2f}"])
         writer.writerow(['最終累積結餘 (USDT)', f"{cumulative_balance / exchange_rate:.2f}"])
@@ -300,10 +324,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     chat_id = chat.id
     
-    # 記錄群組
     if chat.type in ['group', 'supergroup']:
         add_group(chat_id, chat.title)
-        # 為這個群組創建獨立的數據表
         init_group_table(chat_id)
         await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！\n\n每晚 11:59 會自動發送今日明細到本群組")
     
@@ -394,7 +416,7 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     incomes = []
     expenses = []
-    for type, hkd, usdt, customer, operator, date in transactions:
+    for type, hkd, usdt, actual_hkd, customer, operator, date in transactions:
         time = date.split()[1][:5] if date else ""
         if type == 'income':
             incomes.append((time, hkd, usdt, customer, operator))
@@ -415,29 +437,31 @@ async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def show_stats_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """只顯示統計（記帳後用）"""
+    """只顯示統計（記帳後用）- 已扣除費率"""
     chat_id = update.effective_chat.id
     stats = get_today_stats_group(chat_id)
     fee_rate, exchange_rate = get_group_rates(chat_id)
-    total_income_all, total_expense_all = get_all_stats_group(chat_id)
-    today_balance = stats['income_hkd'] - stats['expense_hkd']
+    total_income_actual, total_expense = get_all_stats_group(chat_id)
+    
+    today_balance = stats['income_actual'] - stats['expense_hkd']
     today_balance_u = today_balance / exchange_rate
-    cumulative_balance = total_income_all - total_expense_all
+    cumulative_balance = total_income_actual - total_expense
     cumulative_balance_u = cumulative_balance / exchange_rate
     
     text = f"""📊 今日統計
-今日入款: {stats['income_hkd']:,.1f} HKD
+今日入款: {stats['income_original']:,.1f} HKD
+今日實際入款 (扣費後): {stats['income_actual']:,.1f} HKD
 今日下發: {stats['expense_hkd']:,.1f} HKD
 今日結餘: {today_balance:,.1f} HKD
 
 📈 累積結餘
-總入款金額: {total_income_all:,.1f} HKD
-總下發金額: {total_expense_all:,.1f} HKD
+總入款金額: {total_income_actual:,.1f} HKD
+總下發金額: {total_expense:,.1f} HKD
 費率: {fee_rate}%
 固定匯率: {exchange_rate}
 
-累計應下發: {total_income_all:,.1f} | {total_income_all / exchange_rate:.2f} u
-累計已下發: {total_expense_all:.0f} | {total_expense_all / exchange_rate:.2f} u
+累計應下發: {total_income_actual:,.1f} | {total_income_actual / exchange_rate:.2f} u
+累計已下發: {total_expense:.0f} | {total_expense / exchange_rate:.2f} u
 累計未下發: {cumulative_balance:,.1f} | {cumulative_balance_u:.2f} u"""
     await update.message.reply_text(text)
 
@@ -475,12 +499,6 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ 撤銷失敗")
 
-def calculate_income(amount_hkd, fee_rate, exchange_rate):
-    return amount_hkd * (1 - fee_rate / 100) / exchange_rate
-
-def calculate_expense(amount_hkd, exchange_rate):
-    return amount_hkd / exchange_rate
-
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not await is_admin(update):
@@ -498,14 +516,15 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_income(amount_hkd, fee_rate, exchange_rate)
-        add_transaction_group(chat_id, 'income', amount_hkd, amount_usdt, customer, operator)
+        actual_hkd = calculate_actual_hkd(amount_hkd, fee_rate)
+        add_transaction_group(chat_id, 'income', amount_hkd, amount_usdt, actual_hkd, customer, operator)
         await show_stats_only(update, context)
         return
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
         amount_usdt = calculate_expense(amount_hkd, exchange_rate)
-        add_transaction_group(chat_id, 'expense', amount_hkd, amount_usdt, customer, operator)
+        add_transaction_group(chat_id, 'expense', amount_hkd, amount_usdt, amount_hkd, customer, operator)
         await show_stats_only(update, context)
         return
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
@@ -516,7 +535,6 @@ async def send_daily_report(app):
     groups = get_all_groups()
     
     for chat_id in groups:
-        # 獲取該群組的今日交易記錄
         transactions = get_today_transactions_group(chat_id)
         fee_rate, exchange_rate = get_group_rates(chat_id)
         
@@ -525,7 +543,7 @@ async def send_daily_report(app):
         else:
             incomes = []
             expenses = []
-            for type, hkd, usdt, customer, operator, date in transactions:
+            for type, hkd, usdt, actual_hkd, customer, operator, date in transactions:
                 time = date.split()[1][:5] if date else ""
                 if type == 'income':
                     incomes.append((time, hkd, usdt, customer, operator))
@@ -553,10 +571,8 @@ async def send_daily_report(app):
 def main():
     init_groups_table()
     
-    # 建立應用程式
     app = Application.builder().token(TOKEN).build()
     
-    # 註冊命令
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("fee", set_fee))
     app.add_handler(CommandHandler("rate", set_exchange))
@@ -566,7 +582,6 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
-    # 設定定時報表（每晚 23:59）
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: asyncio.create_task(send_daily_report(app)),
@@ -582,6 +597,7 @@ def main():
     print("🔐 權限設定: 只有群組管理員才能記帳")
     print("⏰ 定時報表已設定: 每晚 23:59 自動發送到所有群組")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
+    print("💰 入款會自動扣除費率，下發不扣費率")
     
     app.run_polling()
 
