@@ -520,6 +520,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         print(f"文字內容: {update.message.text}")
     if update.message.caption:
         print(f"說明內容: {update.message.caption}")
+    print(f"=== 調試結束 ===")
     
     # 獲取訊息文字（文字訊息或照片說明）
     text = None
