@@ -511,12 +511,25 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """處理記帳 - 支援文字訊息和帶說明的照片"""
     
+    # 調試：打印收到的訊息類型
+    print(f"=== 調試開始 ===")
+    print(f"收到訊息類型: {type(update.message)}")
+    print(f"有文字: {update.message.text is not None}")
+    print(f"有說明: {update.message.caption is not None}")
+    if update.message.text:
+        print(f"文字內容: {update.message.text}")
+    if update.message.caption:
+        print(f"說明內容: {update.message.caption}")
+    
     # 獲取訊息文字（文字訊息或照片說明）
     text = None
     if update.message.text:
         text = update.message.text.strip()
     elif update.message.caption:
         text = update.message.caption.strip()
+    
+    print(f"提取的文字: {text}")
+    print(f"=== 調試結束 ===")
     
     # 如果不是以 + 或 - 開頭，直接忽略
     if not text or (not text.startswith('+') and not text.startswith('-')):
