@@ -343,9 +343,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！\n\n每晚 11:59 會自動發送今日明細到本群組")
     
     fee_rate, exchange_rate = get_group_rates(chat_id)
-    text = f"""💼記帳機器人
-
-當前設定:
+    text = f"""當前設定:
 📊 費率: {fee_rate}%
 💱 匯率: {exchange_rate} HKD/USDT
 
@@ -511,11 +509,17 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 撤銷失敗")
 
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """處理記帳 - 只有 + 和 - 開頭的訊息才處理"""
-    text = update.message.text.strip()
+    """處理記帳 - 支援文字訊息和帶說明的照片"""
+    
+    # 獲取訊息文字（文字訊息或照片說明）
+    text = None
+    if update.message.text:
+        text = update.message.text.strip()
+    elif update.message.caption:
+        text = update.message.caption.strip()
     
     # 如果不是以 + 或 - 開頭，直接忽略
-    if not text.startswith('+') and not text.startswith('-'):
+    if not text or (not text.startswith('+') and not text.startswith('-')):
         return
     
     chat_id = update.effective_chat.id
@@ -533,9 +537,11 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
     
+    # 從被引用的訊息獲取客戶名稱
     replied_user = update.message.reply_to_message.from_user
     customer = replied_user.first_name or replied_user.username or "未知客戶"
     
+    # 處理入款
     match = re.match(r'^\+(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
@@ -545,6 +551,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_stats_only(update, context)
         return
     
+    # 處理下發
     match = re.match(r'^-(\d+(?:\.\d+)?)$', text)
     if match:
         amount_hkd = float(match.group(1))
@@ -553,7 +560,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_stats_only(update, context)
         return
     
-    # 格式錯誤（以 + 或 - 開頭但格式不對）
+    # 格式錯誤
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
 
 # ========== 定時報表功能 ==========
