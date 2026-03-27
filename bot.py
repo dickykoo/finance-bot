@@ -511,26 +511,23 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """處理記帳 - 支援文字訊息和帶說明的照片"""
     
-    # 調試：打印收到的訊息類型
-    print(f"=== 調試開始 ===")
-    print(f"收到訊息類型: {type(update.message)}")
-    print(f"有文字: {update.message.text is not None}")
-    print(f"有說明: {update.message.caption is not None}")
-    if update.message.text:
-        print(f"文字內容: {update.message.text}")
-    if update.message.caption:
-        print(f"說明內容: {update.message.caption}")
-    print(f"=== 調試結束 ===")
-    
-    # 獲取訊息文字（文字訊息或照片說明）
+    # 獲取訊息文字
     text = None
+    
+    # 情況1：普通文字訊息
     if update.message.text:
         text = update.message.text.strip()
+        print(f"文字訊息: {text}")
+    
+    # 情況2：照片訊息（有說明文字）
     elif update.message.caption:
         text = update.message.caption.strip()
+        print(f"照片說明: {text}")
     
-    print(f"提取的文字: {text}")
-    print(f"=== 調試結束 ===")
+    # 情況3：如果 message 本身是 None（不應該發生）
+    else:
+        print("無法獲取訊息內容")
+        return
     
     # 如果不是以 + 或 - 開頭，直接忽略
     if not text or (not text.startswith('+') and not text.startswith('-')):
@@ -546,14 +543,14 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fee_rate, exchange_rate = get_group_rates(chat_id)
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
     
-    # 檢查是否引用了客戶訊息
-    if not update.message.reply_to_message:
+    # 獲取客戶名稱：優先從引用的訊息獲取
+    customer = None
+    if update.message.reply_to_message:
+        replied_user = update.message.reply_to_message.from_user
+        customer = replied_user.first_name or replied_user.username or "未知客戶"
+    else:
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
-    
-    # 從被引用的訊息獲取客戶名稱
-    replied_user = update.message.reply_to_message.from_user
-    customer = replied_user.first_name or replied_user.username or "未知客戶"
     
     # 處理入款
     match = re.match(r'^\+(\d+(?:\.\d+)?)$', text)
@@ -576,7 +573,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # 格式錯誤
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
-
 # ========== 定時報表功能 ==========
 async def send_daily_report(app):
     """每晚11:59自動發送今日明細到所有群組"""
