@@ -639,7 +639,8 @@ def main():
     scheduler.add_job(
         run_report,
         'cron',
-        second=0,
+        hour=15,
+        minute=59,
         id='daily_report'
     )
     scheduler.start()
