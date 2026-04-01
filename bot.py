@@ -511,23 +511,19 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """處理記帳 - 支援文字訊息和帶說明的照片"""
     
-    # 獲取訊息文字
+    # 獲取訊息文字（不論是文字訊息還是照片說明）
     text = None
+    message_type = "unknown"
     
-    # 情況1：普通文字訊息
     if update.message.text:
         text = update.message.text.strip()
-        print(f"文字訊息: {text}")
-    
-    # 情況2：照片訊息（有說明文字）
+        message_type = "text"
     elif update.message.caption:
         text = update.message.caption.strip()
-        print(f"照片說明: {text}")
+        message_type = "photo_caption"
     
-    # 情況3：如果 message 本身是 None（不應該發生）
-    else:
-        print("無法獲取訊息內容")
-        return
+    # 調試
+    print(f"訊息類型: {message_type}, 內容: {text}")
     
     # 如果不是以 + 或 - 開頭，直接忽略
     if not text or (not text.startswith('+') and not text.startswith('-')):
@@ -543,14 +539,15 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fee_rate, exchange_rate = get_group_rates(chat_id)
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
     
-    # 獲取客戶名稱：優先從引用的訊息獲取
-    customer = None
-    if update.message.reply_to_message:
-        replied_user = update.message.reply_to_message.from_user
-        customer = replied_user.first_name or replied_user.username or "未知客戶"
-    else:
+    # 獲取客戶名稱：從被引用的訊息獲取
+    if not update.message.reply_to_message:
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
+    
+    replied_user = update.message.reply_to_message.from_user
+    customer = replied_user.first_name or replied_user.username or "未知客戶"
+    
+    print(f"客戶: {customer}, 操作人: {operator}, 金額: {text}")
     
     # 處理入款
     match = re.match(r'^\+(\d+(?:\.\d+)?)$', text)
@@ -573,6 +570,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # 格式錯誤
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
+
 # ========== 定時報表功能 ==========
 async def send_daily_report(app):
     """每晚11:59自動發送今日明細到所有群組"""
@@ -626,12 +624,16 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
-    # 設定定時報表（UTC 15:59 = 香港 23:59）
+    # 設定定時報表（每30秒測試用）
     scheduler = BackgroundScheduler()
+    
+    def run_async_job():
+        asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
+    
     scheduler.add_job(
-        lambda: asyncio.create_task(send_daily_report(app)),
+        run_async_job,
         'interval',
-    seconds=30,
+        seconds=30,
         id='daily_report'
     )
     scheduler.start()
@@ -639,7 +641,7 @@ def main():
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
-    print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送到所有群組")
+    print("⏰ 定時報表已設定: 每30秒測試發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
     
