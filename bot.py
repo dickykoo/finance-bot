@@ -627,11 +627,17 @@ def main():
     # 設定定時報表（每分鐘測試用）
     scheduler = BackgroundScheduler()
     
-    def run_async_job():
-        asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
+    def run_report():
+        # 創建新的事件循環來運行異步函數
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(send_daily_report(app))
+        finally:
+            loop.close()
     
     scheduler.add_job(
-        run_async_job,
+        run_report,
         'cron',
         second=0,
         id='daily_report'
