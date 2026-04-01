@@ -630,9 +630,8 @@ def main():
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: asyncio.create_task(send_daily_report(app)),
-        'cron',
-        hour=15,
-        minute=59,
+        'interval',
+    seconds=30,
         id='daily_report'
     )
     scheduler.start()
