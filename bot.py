@@ -631,10 +631,11 @@ def main():
         asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
     
     scheduler.add_job(
-        run_async_job,
-        'interval',
-        seconds=30,
-        id='daily_report'
+    run_async_job,
+    'cron',
+    second=0,
+    id='daily_report'
+)
     )
     scheduler.start()
     
