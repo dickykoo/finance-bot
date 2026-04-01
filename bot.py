@@ -629,10 +629,13 @@ def main():
     # 設定定時報表（UTC 15:59 = 香港 23:59）
     scheduler = BackgroundScheduler()
     scheduler.add_job(
-    lambda: asyncio.create_task(send_daily_report(app)),
-    'interval',
-    seconds=30,
-    id='daily_report'
+        lambda: asyncio.create_task(send_daily_report(app)),
+        'cron',
+        hour=15,
+        minute=59,
+        id='daily_report'
+    )
+    scheduler.start()
     
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
