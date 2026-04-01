@@ -8,7 +8,6 @@ import psycopg2
 from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # ========== 設定香港時區 ==========
 HONG_KONG_TZ = timezone(timedelta(hours=8))
@@ -624,31 +623,40 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
-    # 設定定時報表（每分鐘測試用）
-    scheduler = BackgroundScheduler()
+    # 使用 threading.Timer 實現定時報表
+    def schedule_report():
+        # 獲取當前香港時間
+        now = get_hk_time()
+        # 目標時間 23:59
+        target = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        if now >= target:
+            # 如果已經過了今天的 23:59，則設定到明天
+            target += timedelta(days=1)
+        
+        # 計算等待秒數
+        wait_seconds = (target - now).total_seconds()
+        print(f"下次報表將在 {wait_seconds:.0f} 秒後發送（{target.strftime('%Y-%m-%d %H:%M:%S')}）")
+        
+        # 設定定時器
+        def send_report_wrapper():
+            asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
+        
+        timer = threading.Timer(wait_seconds, send_report_wrapper)
+        timer.daemon = True
+        timer.start()
+        
+        # 每天重新調度
+        next_timer = threading.Timer(wait_seconds + 1, schedule_report)
+        next_timer.daemon = True
+        next_timer.start()
     
-    def run_report():
-        # 創建新的事件循環來運行異步函數
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(send_daily_report(app))
-        finally:
-            loop.close()
-    
-    scheduler.add_job(
-        run_report,
-        'cron',
-        hour=15,
-        minute=59,
-        id='daily_report'
-    )
-    scheduler.start()
+    # 啟動定時調度
+    schedule_report()
     
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
-    print("⏰ 定時報表已設定: 每分鐘測試發送")
+    print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
     
