@@ -624,25 +624,24 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
-    # 設定定時報表（每30秒測試用）
+    # 設定定時報表（每分鐘測試用）
     scheduler = BackgroundScheduler()
     
     def run_async_job():
         asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
     
     scheduler.add_job(
-    run_async_job,
-    'cron',
-    second=0,
-    id='daily_report'
-)
+        run_async_job,
+        'cron',
+        second=0,
+        id='daily_report'
     )
     scheduler.start()
     
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
-    print("⏰ 定時報表已設定: 每30秒測試發送")
+    print("⏰ 定時報表已設定: 每分鐘測試發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
     
