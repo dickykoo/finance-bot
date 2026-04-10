@@ -331,6 +331,64 @@ def export_to_csv_group(chat_id):
     
     return filepath
 
+# ========== 備忘錄功能（WeChat 和 USD）==========
+def init_memo_table(chat_id, memo_type):
+    """初始化備忘錄表"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    safe_id = safe_table_name(chat_id)
+    table_name = f"{memo_type}_{safe_id}"
+    c.execute(f'''
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id SERIAL PRIMARY KEY,
+            amount REAL,
+            updated_at TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def update_memo(chat_id, memo_type, amount, is_add=True):
+    """更新備忘錄（增加或減少）"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    safe_id = safe_table_name(chat_id)
+    table_name = f"{memo_type}_{safe_id}"
+    
+    # 確保表存在
+    init_memo_table(chat_id, memo_type)
+    
+    # 獲取當前值
+    c.execute(f"SELECT amount FROM {table_name} ORDER BY id DESC LIMIT 1")
+    current = c.fetchone()
+    
+    if current:
+        if is_add:
+            new_amount = current[0] + amount
+        else:
+            new_amount = current[0] - amount
+    else:
+        new_amount = amount if is_add else -amount
+    
+    c.execute(f"INSERT INTO {table_name} (amount, updated_at) VALUES (%s, %s)", (new_amount, get_hk_time_str()))
+    conn.commit()
+    conn.close()
+    return new_amount
+
+def get_memo(chat_id, memo_type):
+    """獲取備忘錄當前值"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    safe_id = safe_table_name(chat_id)
+    table_name = f"{memo_type}_{safe_id}"
+    try:
+        c.execute(f"SELECT amount, updated_at FROM {table_name} ORDER BY id DESC LIMIT 1")
+        result = c.fetchone()
+    except:
+        result = None
+    conn.close()
+    return result
+
 # ========== Telegram 命令 ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -351,6 +409,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1️⃣ 入款: 引用客戶訊息，輸入 +金額
 2️⃣ 下發: 引用客戶訊息，輸入 -金額
 
+備忘錄:
+📱 wechat+金額 - 增加 WeChat 餘額
+📱 wechat-金額 - 減少 WeChat 餘額
+💵 usd+金額 - 增加 USD 餘額
+💵 usd-金額 - 減少 USD 餘額
+
+查詢:
+/wechat - 查詢 WeChat 餘額
+/usd - 查詢 USD 餘額
+
 查看報表:
 /list - 今日明細
 /stats - 今日統計
@@ -364,6 +432,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 定時報表:
 每晚 11:59 自動發送今日明細到本群組"""
     await update.message.reply_text(text)
+
+async def wechat_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查詢 WeChat 餘額"""
+    chat_id = update.effective_chat.id
+    result = get_memo(chat_id, 'wechat')
+    if result:
+        await update.message.reply_text(f"📱 WeChat 餘額：{result[0]:,.0f}\n📅 更新時間：{result[1]}")
+    else:
+        await update.message.reply_text("📱 WeChat 暫無記錄，請輸入 wechat+金額 開始記錄")
+
+async def usd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查詢 USD 餘額"""
+    chat_id = update.effective_chat.id
+    result = get_memo(chat_id, 'usd')
+    if result:
+        await update.message.reply_text(f"💵 USD 餘額：{result[0]:,.0f}\n📅 更新時間：{result[1]}")
+    else:
+        await update.message.reply_text("💵 USD 暫無記錄，請輸入 usd+金額 開始記錄")
 
 async def set_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -512,23 +598,49 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # 獲取訊息文字（不論是文字訊息還是照片說明）
     text = None
-    message_type = "unknown"
-    
     if update.message.text:
         text = update.message.text.strip()
-        message_type = "text"
     elif update.message.caption:
         text = update.message.caption.strip()
-        message_type = "photo_caption"
     
-    # 調試
-    print(f"訊息類型: {message_type}, 內容: {text}")
-    
-    # 如果不是以 + 或 - 開頭，直接忽略
-    if not text or (not text.startswith('+') and not text.startswith('-')):
+    if not text:
         return
     
     chat_id = update.effective_chat.id
+    
+    # ========== 處理 WeChat 備忘錄 ==========
+    match_wechat = re.match(r'^wechat\+(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_wechat:
+        amount = float(match_wechat.group(1))
+        new_amount = update_memo(chat_id, 'wechat', amount, is_add=True)
+        await update.message.reply_text(f"✅ 已記錄：wechat = {new_amount:.0f}")
+        return
+    
+    match_wechat_sub = re.match(r'^wechat-(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_wechat_sub:
+        amount = float(match_wechat_sub.group(1))
+        new_amount = update_memo(chat_id, 'wechat', amount, is_add=False)
+        await update.message.reply_text(f"✅ 已記錄：wechat = {new_amount:.0f}")
+        return
+    
+    # ========== 處理 USD 備忘錄 ==========
+    match_usd = re.match(r'^usd\+(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_usd:
+        amount = float(match_usd.group(1))
+        new_amount = update_memo(chat_id, 'usd', amount, is_add=True)
+        await update.message.reply_text(f"✅ 已記錄：usd = {new_amount:.0f}")
+        return
+    
+    match_usd_sub = re.match(r'^usd-(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_usd_sub:
+        amount = float(match_usd_sub.group(1))
+        new_amount = update_memo(chat_id, 'usd', amount, is_add=False)
+        await update.message.reply_text(f"✅ 已記錄：usd = {new_amount:.0f}")
+        return
+    
+    # 如果不是以 + 或 - 開頭，直接忽略
+    if not text.startswith('+') and not text.startswith('-'):
+        return
     
     # 檢查權限
     if not await is_admin(update):
@@ -545,8 +657,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     replied_user = update.message.reply_to_message.from_user
     customer = replied_user.first_name or replied_user.username or "未知客戶"
-    
-    print(f"客戶: {customer}, 操作人: {operator}, 金額: {text}")
     
     # 處理入款
     match = re.match(r'^\+(\d+(?:\.\d+)?)$', text)
@@ -621,23 +731,20 @@ def main():
     app.add_handler(CommandHandler("list", show_list))
     app.add_handler(CommandHandler("export", export_excel))
     app.add_handler(CommandHandler("undo", cancel_last))
+    app.add_handler(CommandHandler("wechat", wechat_balance))
+    app.add_handler(CommandHandler("usd", usd_balance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
     # 使用 threading.Timer 實現定時報表
     def schedule_report():
-        # 獲取當前香港時間
         now = get_hk_time()
-        # 目標時間 23:59
         target = now.replace(hour=23, minute=59, second=0, microsecond=0)
         if now >= target:
-            # 如果已經過了今天的 23:59，則設定到明天
             target += timedelta(days=1)
         
-        # 計算等待秒數
         wait_seconds = (target - now).total_seconds()
         print(f"下次報表將在 {wait_seconds:.0f} 秒後發送（{target.strftime('%Y-%m-%d %H:%M:%S')}）")
         
-        # 設定定時器
         def send_report_wrapper():
             asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
         
@@ -645,12 +752,10 @@ def main():
         timer.daemon = True
         timer.start()
         
-        # 每天重新調度
         next_timer = threading.Timer(wait_seconds + 1, schedule_report)
         next_timer.daemon = True
         next_timer.start()
     
-    # 啟動定時調度
     schedule_report()
     
     print("🤖 財務記帳機器人啟動中...")
@@ -659,6 +764,7 @@ def main():
     print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
+    print("📱 備忘錄功能: wechat 和 usd")
     
     app.run_polling()
 
