@@ -331,7 +331,7 @@ def export_to_csv_group(chat_id):
     
     return filepath
 
-# ========== 備忘錄功能（WeChat 和 USD）==========
+# ========== 備忘錄功能（WeChat、USD、Tap & Go）==========
 def init_memo_table(chat_id, memo_type):
     """初始化備忘錄表"""
     conn = get_db_connection()
@@ -414,10 +414,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📱 wechat-金額 - 減少 WeChat 餘額
 💵 usd+金額 - 增加 USD 餘額
 💵 usd-金額 - 減少 USD 餘額
+💳 tap+金額 - 增加 Tap & Go 餘額
+💳 tap-金額 - 減少 Tap & Go 餘額
 
 查詢:
 /wechat - 查詢 WeChat 餘額
 /usd - 查詢 USD 餘額
+/tap - 查詢 Tap & Go 餘額
 
 查看報表:
 /list - 今日明細
@@ -450,6 +453,15 @@ async def usd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"💵 USD 餘額：{result[0]:,.0f}\n📅 更新時間：{result[1]}")
     else:
         await update.message.reply_text("💵 USD 暫無記錄，請輸入 usd+金額 開始記錄")
+
+async def tap_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查詢 Tap & Go 餘額"""
+    chat_id = update.effective_chat.id
+    result = get_memo(chat_id, 'tap')
+    if result:
+        await update.message.reply_text(f"💳 Tap & Go 餘額：{result[0]:,.0f}\n📅 更新時間：{result[1]}")
+    else:
+        await update.message.reply_text("💳 Tap & Go 暫無記錄，請輸入 tap+金額 開始記錄")
 
 async def set_fee(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -638,6 +650,21 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"✅ 已記錄：usd = {new_amount:.0f}")
         return
     
+    # ========== 處理 Tap & Go 備忘錄 ==========
+    match_tap = re.match(r'^tap\+(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_tap:
+        amount = float(match_tap.group(1))
+        new_amount = update_memo(chat_id, 'tap', amount, is_add=True)
+        await update.message.reply_text(f"✅ 已記錄：tap = {new_amount:.0f}")
+        return
+    
+    match_tap_sub = re.match(r'^tap-(\d+(?:\.\d+)?)$', text, re.IGNORECASE)
+    if match_tap_sub:
+        amount = float(match_tap_sub.group(1))
+        new_amount = update_memo(chat_id, 'tap', amount, is_add=False)
+        await update.message.reply_text(f"✅ 已記錄：tap = {new_amount:.0f}")
+        return
+    
     # 如果不是以 + 或 - 開頭，直接忽略
     if not text.startswith('+') and not text.startswith('-'):
         return
@@ -733,6 +760,7 @@ def main():
     app.add_handler(CommandHandler("undo", cancel_last))
     app.add_handler(CommandHandler("wechat", wechat_balance))
     app.add_handler(CommandHandler("usd", usd_balance))
+    app.add_handler(CommandHandler("tap", tap_balance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
     # 使用 threading.Timer 實現定時報表
@@ -764,7 +792,7 @@ def main():
     print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
-    print("📱 備忘錄功能: wechat 和 usd")
+    print("📱 備忘錄功能: wechat、usd、tap")
     
     app.run_polling()
 
