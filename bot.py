@@ -271,13 +271,23 @@ def cancel_transaction_group(chat_id, transaction_id):
     conn.close()
     return affected > 0
 
-def export_to_csv_group(chat_id):
+def export_to_csv_group(chat_id, year_month=None):
+    """匯出指定月份的記錄到 CSV 檔案（含客戶業績統計）"""
     conn = get_db_connection()
     c = conn.cursor()
     safe_id = safe_table_name(chat_id)
     table_name = f"transactions_{safe_id}"
+    
+    # 構建查詢
+    query = f"SELECT id, type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date FROM {table_name} ORDER BY date DESC"
+    params = []
+    
+    if year_month:
+        query = f"SELECT id, type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date FROM {table_name} WHERE date LIKE %s ORDER BY date DESC"
+        params.append(f"{year_month}%")
+    
     try:
-        c.execute(f"SELECT id, type, amount_hkd, amount_usdt, actual_hkd, customer, operator, date FROM {table_name} ORDER BY date DESC")
+        c.execute(query, params)
         transactions = c.fetchall()
     except:
         transactions = []
@@ -287,9 +297,16 @@ def export_to_csv_group(chat_id):
         return None
     
     fee_rate, exchange_rate = get_group_rates(chat_id)
+    
+    # 按日期分組計算每日數據
     daily_data = {}
+    # 按客戶分組統計業績
+    customer_stats = {}
+    
     for id, type, hkd, usdt, actual_hkd, customer, operator, date in transactions:
         date_str = date.split()[0]
+        
+        # 每日數據
         if date_str not in daily_data:
             daily_data[date_str] = {'income_original': 0, 'income_actual': 0, 'expense': 0}
         if type == 'income':
@@ -297,18 +314,40 @@ def export_to_csv_group(chat_id):
             daily_data[date_str]['income_actual'] += actual_hkd
         else:
             daily_data[date_str]['expense'] += hkd
+        
+        # 客戶業績統計
+        if customer not in customer_stats:
+            customer_stats[customer] = {'income': 0, 'expense': 0, 'count': 0}
+        if type == 'income':
+            customer_stats[customer]['income'] += hkd
+        else:
+            customer_stats[customer]['expense'] += hkd
+        customer_stats[customer]['count'] += 1
     
     sorted_dates = sorted(daily_data.keys())
-    filename = f"daily_report_{safe_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    # 檔案名稱
+    if year_month:
+        filename = f"finance_report_{year_month}_{safe_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
+    else:
+        filename = f"finance_report_{get_hk_time().strftime('%Y%m')}_{safe_id}_{get_hk_time().strftime('%Y%m%d_%H%M%S')}.csv"
     filepath = os.path.join(os.path.dirname(__file__), filename)
     
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
-        writer.writerow(['每日財務明細報表'])
+        
+        # ========== 標題 ==========
+        if year_month:
+            writer.writerow([f'財務報表 - {year_month}'])
+        else:
+            writer.writerow([f'財務報表 - {get_hk_time().strftime("%Y年%m月")}'])
         writer.writerow(['生成時間', get_hk_time_str()])
         writer.writerow(['費率', f"{fee_rate}%"])
         writer.writerow(['匯率', str(exchange_rate)])
         writer.writerow([])
+        
+        # ========== 每日明細表 ==========
+        writer.writerow(['=== 每日明細 ==='])
         writer.writerow(['日期', '入款金額 (HKD)', f'費率扣除 ({fee_rate}%)', '實際入款 (HKD)', '下發金額 (HKD)', '當日結餘 (HKD)', '累積結餘 (HKD)'])
         
         cumulative_balance = 0
@@ -322,10 +361,28 @@ def export_to_csv_group(chat_id):
             writer.writerow([date_str, f"{income_original:,.2f}", f"{fee_deduction:,.2f}", f"{income_actual:,.2f}", f"{expense:,.2f}", f"{daily_balance:,.2f}", f"{cumulative_balance:,.2f}"])
         
         writer.writerow([])
+        
+        # ========== 客戶業績統計表 ==========
+        writer.writerow(['=== 客戶業績統計 ==='])
+        writer.writerow(['客戶', '總入款 (HKD)', '總下發 (HKD)', '結餘 (HKD)', '交易筆數'])
+        
+        # 按客戶名稱排序
+        for customer in sorted(customer_stats.keys()):
+            stats = customer_stats[customer]
+            balance = stats['income'] - stats['expense']
+            writer.writerow([customer, f"{stats['income']:,.2f}", f"{stats['expense']:,.2f}", f"{balance:,.2f}", stats['count']])
+        
+        writer.writerow([])
+        
+        # ========== 總結 ==========
+        total_income_original = sum(d['income_original'] for d in daily_data.values())
+        total_income_actual = sum(d['income_actual'] for d in daily_data.values())
+        total_expense = sum(d['expense'] for d in daily_data.values())
+        
         writer.writerow(['=== 總結 ==='])
-        writer.writerow(['總入款 (HKD)', f"{sum(d['income_original'] for d in daily_data.values()):,.2f}"])
-        writer.writerow(['總實際入款 (HKD)', f"{sum(d['income_actual'] for d in daily_data.values()):,.2f}"])
-        writer.writerow(['總下發 (HKD)', f"{sum(d['expense'] for d in daily_data.values()):,.2f}"])
+        writer.writerow(['總入款 (HKD)', f"{total_income_original:,.2f}"])
+        writer.writerow(['總實際入款 (HKD)', f"{total_income_actual:,.2f}"])
+        writer.writerow(['總下發 (HKD)', f"{total_expense:,.2f}"])
         writer.writerow(['最終累積結餘 (HKD)', f"{cumulative_balance:,.2f}"])
         writer.writerow(['最終累積結餘 (USDT)', f"{cumulative_balance / exchange_rate:.2f}"])
     
@@ -397,7 +454,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type in ['group', 'supergroup']:
         add_group(chat_id, chat.title)
         init_group_table(chat_id)
-        await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！\n\n每晚 11:59 會自動發送今日明細到本群組")
+        await update.message.reply_text(f"✅ 本群組已初始化獨立記帳系統！")
     
     fee_rate, exchange_rate = get_group_rates(chat_id)
     text = f"""當前設定:
@@ -425,15 +482,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 查看報表:
 /list - 今日明細
 /stats - 今日統計
-/export - 匯出 Excel 報表
+/export - 匯出當前月份 Excel
+/export 2026-03 - 匯出指定月份 Excel
 /undo - 撤銷最後一筆
 
 管理設定:
 /fee 3.5 - 設置費率
-/rate 7.9 - 設置匯率
-
-定時報表:
-每晚 11:59 自動發送今日明細到本群組"""
+/rate 7.9 - 設置匯率"""
     await update.message.reply_text(text)
 
 async def wechat_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -576,15 +631,30 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_stats_only(update, context)
 
 async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """匯出 Excel 報表（可按月份）"""
     chat_id = update.effective_chat.id
-    await update.message.reply_text("📊 正在生成報表，請稍候...")
-    filepath = export_to_csv_group(chat_id)
+    
+    # 檢查是否指定了月份
+    year_month = None
+    if context.args and len(context.args) > 0:
+        if re.match(r'^\d{4}-\d{2}$', context.args[0]):
+            year_month = context.args[0]
+    
+    if year_month:
+        await update.message.reply_text(f"📊 正在生成 {year_month} 的報表，請稍候...")
+    else:
+        await update.message.reply_text(f"📊 正在生成 {get_hk_time().strftime('%Y年%m月')} 的報表，請稍候...")
+    
+    filepath = export_to_csv_group(chat_id, year_month)
     if not filepath:
-        await update.message.reply_text("📭 沒有任何交易記錄可匯出")
+        if year_month:
+            await update.message.reply_text(f"📭 {year_month} 沒有交易記錄可匯出")
+        else:
+            await update.message.reply_text("📭 當前月份沒有交易記錄可匯出")
         return
     try:
         with open(filepath, 'rb') as f:
-            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 每日財務明細報表\n生成時間: {get_hk_time_str()}")
+            await update.message.reply_document(document=f, filename=os.path.basename(filepath), caption=f"📊 財務報表\n生成時間: {get_hk_time_str()}")
         os.remove(filepath)
     except Exception as e:
         await update.message.reply_text(f"❌ 匯出失敗: {e}")
@@ -608,7 +678,6 @@ async def cancel_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """處理記帳 - 支援文字訊息和帶說明的照片"""
     
-    # 獲取訊息文字（不論是文字訊息還是照片說明）
     text = None
     if update.message.text:
         text = update.message.text.strip()
@@ -677,7 +746,6 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fee_rate, exchange_rate = get_group_rates(chat_id)
     operator = update.effective_user.first_name or update.effective_user.username or "管理員"
     
-    # 獲取客戶名稱：從被引用的訊息獲取
     if not update.message.reply_to_message:
         await update.message.reply_text("❌ 請引用客戶的訊息來記帳\n\n例如：引用客戶的訊息後輸入 +5000 或 -3000")
         return
@@ -704,46 +772,7 @@ async def handle_quick_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_stats_only(update, context)
         return
     
-    # 格式錯誤
     await update.message.reply_text("❌ 格式錯誤\n\n正確格式：\n引用客戶訊息後輸入：\n+金額  → 入款\n-金額  → 下發\n\n例如：+5000 或 -3000")
-
-# ========== 定時報表功能 ==========
-async def send_daily_report(app):
-    """每晚11:59自動發送今日明細到所有群組"""
-    groups = get_all_groups()
-    
-    for chat_id in groups:
-        transactions = get_today_transactions_group(chat_id)
-        fee_rate, exchange_rate = get_group_rates(chat_id)
-        
-        if not transactions:
-            report = "📭 今日無交易記錄"
-        else:
-            incomes = []
-            expenses = []
-            for type, hkd, usdt, actual_hkd, customer, operator, date in transactions:
-                time = date.split()[1][:5] if date else ""
-                if type == 'income':
-                    incomes.append((time, hkd, usdt, customer, operator))
-                else:
-                    expenses.append((time, hkd, usdt, customer, operator))
-            
-            report = ""
-            if incomes:
-                report += f"📊 今日入款（{len(incomes)}筆）\n"
-                for time, hkd, usdt, customer, operator in incomes:
-                    report += f"{time}  {hkd:.0f}*{1 - fee_rate/100:.3f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-                report += "\n"
-            if expenses:
-                report += f"📊 今日下發（{len(expenses)}筆）\n"
-                for time, hkd, usdt, customer, operator in expenses:
-                    report += f"{time}  {hkd:.0f} / {exchange_rate}={usdt:.2f}U   {customer}  {operator}\n"
-        
-        try:
-            await app.bot.send_message(chat_id=chat_id, text=report)
-            print(f"✅ 定時報表已發送到群組 {chat_id}")
-        except Exception as e:
-            print(f"❌ 發送到群組 {chat_id} 失敗: {e}")
 
 # ========== 主程式 ==========
 def main():
@@ -763,36 +792,13 @@ def main():
     app.add_handler(CommandHandler("tap", tap_balance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quick_input))
     
-    # 使用 threading.Timer 實現定時報表
-    def schedule_report():
-        now = get_hk_time()
-        target = now.replace(hour=23, minute=59, second=0, microsecond=0)
-        if now >= target:
-            target += timedelta(days=1)
-        
-        wait_seconds = (target - now).total_seconds()
-        print(f"下次報表將在 {wait_seconds:.0f} 秒後發送（{target.strftime('%Y-%m-%d %H:%M:%S')}）")
-        
-        def send_report_wrapper():
-            asyncio.run_coroutine_threadsafe(send_daily_report(app), app.loop)
-        
-        timer = threading.Timer(wait_seconds, send_report_wrapper)
-        timer.daemon = True
-        timer.start()
-        
-        next_timer = threading.Timer(wait_seconds + 1, schedule_report)
-        next_timer.daemon = True
-        next_timer.start()
-    
-    schedule_report()
-    
     print("🤖 財務記帳機器人啟動中...")
     print("📝 記帳方式: 只能引用客戶訊息")
     print("🔐 權限設定: 只有群組管理員才能記帳")
-    print("⏰ 定時報表已設定: 每晚 23:59 (香港時間) 自動發送")
     print("🏢 群組獨立記帳: 每個群組的記錄完全分開")
     print("💰 入款會自動扣除費率，下發不扣費率")
     print("📱 備忘錄功能: wechat、usd、tap")
+    print("📊 匯出功能: /export (當前月份) 或 /export 2026-03 (指定月份)")
     
     app.run_polling()
 
